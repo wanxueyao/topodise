@@ -1,0 +1,37 @@
+# TopoDiSE 与各基线方法开源复现的唯一环境文件。
+#
+# 推荐安装方式：
+#   python -m venv .venv
+#   source .venv/bin/activate
+#   python -m pip install --upgrade pip
+#   pip install -r requirements.txt
+#
+# 如机器需要 CUDA，请先安装与驱动匹配的 PyTorch 轮子；
+# 否则 pip 会根据本文件解析可用的 CPU 版本。
+
+# 深度学习核心依赖
+torch
+torchvision
+timm
+
+# 数值计算与评估
+numpy
+scipy
+scikit-learn
+
+# 图像处理与医学图像格式
+Pillow
+opencv-python
+scikit-image
+nibabel
+
+# UNet 分割预处理与推理
+nnunetv2
+
+# 绘图与结果汇总
+matplotlib
+seaborn
+
+# 通用工具
+tqdm
+PyYAML

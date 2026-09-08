@@ -1,0 +1,31 @@
+# macOS system files
+.DS_Store
+
+# Python cache
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+.venv_dgx_spark/
+.venv-dgxspark/
+.venv-unet/
+.venv-c8/
+.env
+.env.*
+!.env.example
+
+# Results and training artifacts
+results/
+test/
+unet/nnunet_data/
+unet/logs/
+*.ckpt
+*.pth
+*.pt
+
+# Local datasets and patient-level derived tables
+datasets/
+
+# External pretrained weights (documented download/place path)
+experiments/unified_stage2_encoder_comparison/pretrained/
