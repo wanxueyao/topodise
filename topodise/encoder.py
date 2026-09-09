@@ -1,5 +1,5 @@
 """Dual-branch topology-aware semantic encoder (E_sem)."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Tuple, Literal, Optional
 
 import torch

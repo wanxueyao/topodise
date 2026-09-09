@@ -17,7 +17,7 @@ import json
 import random
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 import torchvision.transforms.functional as TF
 from PIL import Image
@@ -351,18 +351,6 @@ class PDDataset(Dataset):
 
 # ==================== 数据加载器构建 ====================
 
-def load_corn1_dataset(root_dir: str, batch_size: int = 16,
-                       num_workers: int = 4, split_ratio: float = 0.8,
-                       augment: bool = True) -> Tuple[DataLoader, DataLoader]:
-    """
-    向后兼容接口：委托给 build_corn1_loaders。
-    
-    直接使用 CORN-1 的预定义 train/val 划分；split_ratio 参数保留但不再生效。
-    """
-    return build_corn1_loaders(
-        root_dir=root_dir, batch_size=batch_size,
-        num_workers=num_workers, augment_train=augment,
-    )
 
 
 # ==================== PD 数据集（MTL 专用）====================
@@ -579,40 +567,6 @@ def build_pd_patient_kfold_loaders(
     return train_loader, val_loader
 
 
-def load_pd_dataset(root_dir: str, split: str = 'train',
-                    arch_mode: str = 'dual_stream',
-                    batch_size: int = 16, num_workers: int = 4,
-                    kfold_idx: int = 0, kfold_splits: int = 5,
-                    augment: bool = True, datasets_base: str = 'datasets',
-                    dataset_mode: str = 'pd_all') -> DataLoader:
-    """
-    向后兼容接口：委托给 build_pd_patient_kfold_loaders。
-
-
-    原 ``metadata.json`` 已更名为 ``patients_dataset_en.json``，
-    此函数自动寻找正确的 JSON 文件。
-    """
-    # 尝试找到正确的 JSON 路径
-    for candidate in ('patients_dataset_en.json', 'metadata.json'):
-        json_path = os.path.join(root_dir, candidate)
-        if os.path.exists(json_path):
-            break
-    else:
-        raise FileNotFoundError(
-            f"在 {root_dir} 中未找到 patients_dataset_en.json 或 metadata.json"
-        )
-
-    train_loader, val_loader = build_pd_patient_kfold_loaders(
-        dataset_json=json_path,
-        fold_idx=kfold_idx,
-        n_folds=kfold_splits,
-        datasets_base=datasets_base,
-        dataset_mode=dataset_mode,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        augment_train=augment,
-    )
-    return train_loader if split == 'train' else val_loader
 
 
 class MultiTaskDataLoader:
@@ -655,31 +609,3 @@ class MultiTaskDataLoader:
             pd_batch['task'] = 'classification'
 
             yield corn1_batch, pd_batch
-
-
-if __name__ == '__main__':
-    import torch
-
-    print("=== 测试 CORN-1 数据加载 ===")
-    try:
-        corn1_root = 'datasets/CORN-1'
-        train_loader, val_loader = build_corn1_loaders(corn1_root, batch_size=4, num_workers=0)
-        batch = next(iter(train_loader))
-        print(f"  图像: {batch['image'].shape}, 掩模: {batch['mask'].shape}")
-        print(f"  掩模唯一值: {torch.unique(batch['mask'])}")
-    except Exception as e:
-        print(f"  CORN-1 加载失败: {e}")
-
-    print("\n=== 测试 PD 患者 kfold 加载 ===")
-    try:
-        pd_json = 'datasets/pd_dataset_en/patients_dataset_en.json'
-        tr_loader, va_loader = build_pd_patient_kfold_loaders(
-            pd_json, fold_idx=0, n_folds=5, batch_size=4, num_workers=0
-        )
-        batch = next(iter(tr_loader))
-        print(f"  图像: {batch['image'].shape}")
-        print(f"  pd_label: {batch['pd_label']}")
-        print(f"  stage_label: {batch['stage_label']}")
-    except Exception as e:
-        print(f"  PD 加载失败: {e}")
-

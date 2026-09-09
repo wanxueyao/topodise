@@ -1,34 +1,4 @@
-"""
-simclr_trainer.py - SimCLR 自监督对比学习训练模块
-
-SimCLR 原理
------------
-1. 每张图像生成两个随机增强视图（view1 / view2）
-2. backbone 提取特征后接投影头（MLP），映射到对比空间
-3. NT-Xent 损失拉近同一图像的两个视图，推远不同图像的视图
-4. 预训练完成后丢弃投影头，将 backbone 迁移至下游分类任务
-
-优势（小样本场景）
------------------
-- 无需标签即可学习视觉表征，有效利用所有训练样本
-- 迫使模型学习视角不变的特征，提升泛化能力
-- 微调阶段无需额外增强，减少超参数
-
-主要组件
---------
-- SimCLRTransform: 对比学习专用增强（随机裁剪/翻转/色彩扰动）
-- SimCLRDatasetWrapper: 包装 PDDataset，每样本返回 (view1, view2)
-- NTXentLoss: 归一化温度交叉熵损失
-- SimCLRProjectionHead: MLP 投影头 (feat_dim → 256 → 128)
-- SimCLRModel: backbone + 投影头
-- simclr_pretrain_epoch: 单 epoch 预训练
-- simclr_pretrain: 完整预训练主循环
-
-参考文献
---------
-Chen et al. "A Simple Framework for Contrastive Learning of Visual Representations."
-ICML 2020. https://arxiv.org/abs/2002.05709
-"""
+"""ResNet18 SimCLR augmentations, contrastive loss and pretraining loop."""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -39,41 +9,28 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from torchvision import transforms
 from contextlib import nullcontext
 
-from core.light_models import (
-    get_light_backbone,
-    get_light_backbone_feature_dim,
-    LIGHT_BACKBONE_CONFIG,
-)
 from core.basic_models import (
     get_backbone as _get_basic_backbone,
     get_backbone_feature_dim as _get_basic_feature_dim,
 )
-from core.light_trainer import schedule_vanillanet_act_num
 from core.progress import ETAEstimator, format_duration
 
 
 # Backbone 路由：使用 basic_models 的名称集合
-_BASIC_BACKBONE_NAMES = {'densenet121', 'resnet18', 'resnet34', 'efficientnet'}
 
 
 def _get_backbone(backbone: str, pretrained) -> 'nn.Module':
-    if backbone in _BASIC_BACKBONE_NAMES:
-        return _get_basic_backbone(backbone, pretrained)
-    return get_light_backbone(backbone, pretrained)
+    return _get_basic_backbone(backbone, pretrained)
 
 
 def _get_feature_dim(backbone: str) -> int:
-    if backbone in _BASIC_BACKBONE_NAMES:
-        return _get_basic_feature_dim(backbone)
-    return get_light_backbone_feature_dim(backbone)
+    return _get_basic_feature_dim(backbone)
 
 
 def _get_input_size(backbone: str) -> int:
     """获取 backbone 输入尺寸（统一入口）"""
-    if backbone in _BASIC_BACKBONE_NAMES:
-        from core.basic_models import BACKBONE_CONFIG
-        return BACKBONE_CONFIG[backbone]['input_size']
-    return LIGHT_BACKBONE_CONFIG[backbone]['input_size']
+    from core.basic_models import BACKBONE_CONFIG
+    return BACKBONE_CONFIG[backbone]['input_size']
 
 
 # ==================== SimCLR 数据增强 ====================
@@ -277,7 +234,7 @@ class SimCLRModel(nn.Module):
     预训练完成后，通过 get_backbone() 取出 backbone 迁移到分类任务。
 
     Args:
-        backbone_name: 轻量化 backbone 名称（见 LIGHT_BACKBONE_CONFIG）
+        backbone_name: 轻量化 backbone 名称（见 BACKBONE_CONFIG）
         pretrained: ImageNet 预训练权重加载模式
         proj_hidden_dim: 投影头隐层维度
         proj_out_dim: 投影头输出维度
@@ -308,10 +265,6 @@ class SimCLRModel(nn.Module):
         """返回预训练 backbone（用于初始化下游任务模型）"""
         return self.backbone
 
-    def set_act_num(self, n: int):
-        """VanillaNet 激活调度透传"""
-        if hasattr(self.backbone, 'set_act_num'):
-            self.backbone.set_act_num(n)
 
 
 # ==================== 预训练单 epoch ====================
@@ -322,7 +275,6 @@ def simclr_pretrain_epoch(
     criterion: NTXentLoss,
     optimizer: torch.optim.Optimizer,
     device: str,
-    vanillanet_act_num: int = 0,
     amp: bool = False,
     channels_last: bool = False,
     non_blocking: bool = False,
@@ -336,13 +288,11 @@ def simclr_pretrain_epoch(
         criterion: NTXentLoss
         optimizer: 优化器
         device: 计算设备
-        vanillanet_act_num: VanillaNet 激活分支数（其他 backbone 忽略）
 
     Returns:
         本 epoch 的平均 NT-Xent 损失
     """
     model.train()
-    model.set_act_num(vanillanet_act_num)
 
     total_loss = 0.0
     n_batches = 0
@@ -396,7 +346,6 @@ def simclr_pretrain(
     weight_decay: float = 1e-4,
     num_workers: int = 4,
     input_size: Optional[int] = None,
-    vanillanet_act_num_init: int = 3,
     verbose: bool = True,
     amp: bool = False,
     channels_last: bool = False,
@@ -427,8 +376,7 @@ def simclr_pretrain(
         proj_out_dim: 投影头输出维度
         weight_decay: 权重衰减（预训练用较小值）
         num_workers: DataLoader 工作进程数
-        input_size: backbone 输入尺寸（None 时自动从 LIGHT_BACKBONE_CONFIG 获取）
-        vanillanet_act_num_init: VanillaNet 激活初始分支数
+        input_size: backbone 输入尺寸（None 时自动从 BACKBONE_CONFIG 获取）
         verbose: 是否打印训练进度
 
     Returns:
@@ -495,9 +443,8 @@ def simclr_pretrain(
     epoch_progress = ETAEstimator(num_epochs, window=5)
     for epoch in range(num_epochs):
         epoch_started = time.perf_counter()
-        act_num = schedule_vanillanet_act_num(epoch, num_epochs, vanillanet_act_num_init)
         loss = simclr_pretrain_epoch(
-            model, simclr_loader, criterion, optimizer, device, act_num,
+            model, simclr_loader, criterion, optimizer, device,
             amp=amp, channels_last=channels_last, non_blocking=bool(pin_memory),
         )
         scheduler.step()

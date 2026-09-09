@@ -1,6 +1,5 @@
 """Residual adapters with zero-init upsample for RACF."""
 from typing import Dict
-import torch
 import torch.nn as nn
 
 from .encoder import TopoDiSEEncoder

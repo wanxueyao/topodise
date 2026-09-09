@@ -24,7 +24,7 @@ import torch
 from torch.utils.data import Dataset
 
 from .skeletonize import image_to_skeleton
-from .graph_builder import skeleton_to_graph, NerveGraphData, NODE_FEAT_DIM, EDGE_FEAT_DIM
+from .graph_builder import skeleton_to_graph, NerveGraphData, EDGE_FEAT_DIM
 
 
 # ─── 数据结构 ──────────────────────────────────────────────────────────────────

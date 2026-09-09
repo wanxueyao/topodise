@@ -13,8 +13,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional, List
-import math
+from typing import Tuple, List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -310,32 +309,3 @@ class SegmentationBranch(nn.Module):
         # 这部分由外部的伪标签生成器处理
         # 这里仅作占位符
         return segmentation
-
-
-if __name__ == '__main__':
-    # 测试
-    encoder_dims = (64, 64, 128, 256, 512)
-    
-    seg_branch = SegmentationBranch(
-        encoder_dims=encoder_dims,
-        output_channels=1,
-        patch_size=16,
-        mae_mask_ratio=0.75
-    )
-    
-    # 模拟编码器特征
-    features = [
-        torch.randn(2, 64, 128, 128),
-        torch.randn(2, 64, 64, 64),
-        torch.randn(2, 128, 32, 32),
-        torch.randn(2, 256, 16, 16),
-        torch.randn(2, 512, 8, 8),
-    ]
-    
-    images = torch.randn(2, 3, 256, 256)
-    targets = torch.randint(0, 2, (2, 1, 256, 256)).float()
-    
-    outputs = seg_branch(features, images, targets, use_mae=True, use_segmentation=True)
-    print("分割输出:", outputs['segmentation'].shape)
-    print("MAE重构:", outputs['mae_reconstructed'].shape)
-    print("损失:", outputs['losses'])

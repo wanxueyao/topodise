@@ -1,51 +1,16 @@
-# ARIS / TopoDiSE 实验代码
+# TopoDiSE 实验代码
 
-本目录用于运行当前版本的实验实现。实验分为两部分：
+代码保留论文采用的完整配置：7 种 baseline 的 43 组实验，以及 TopoDiSE 的 3 个主任务、40 组消融实验和 1 组 DM 迁移实验。配置中的随机种子、交叉验证、baseline TD-rest 二分类和 TopoDiSE 集成候选均保留。
 
-1. `experiments/*_experiments/`：论文批量实验，包含 7 个 baseline 家族、TopoDiSE 三个主任务、TopoDiSE ablation 和 DM 迁移。每个 baseline 只保留论文采用的最佳配置。
-2. `experiments/unified_stage2_encoder_comparison/`：统一 Stage2 冻结编码器比较。该部分只使用本机进程，不包含双 DGX Spark、SSH、rsync 或节点编号逻辑。
+## 环境与数据
 
-历史调参网格和未进入论文的 light-model 实验已从默认开源入口移除。
-
-## 目录结构
-
-```text
-codes/
-├── core/                         # 共享数据、模型与训练工具
-├── datasets/                     # 数据目录与 manifest
-├── experiments/
-│   ├── basic_experiments/          # ResNet18 baseline
-│   ├── simclr_experiments/         # SimCLR baseline
-│   ├── gnn_experiments/            # UNet-only / UNet-dual / GNN
-│   ├── mtl_experiments/            # MTL-MAE baseline
-│   ├── prototype_experiments/      # Prototype baseline
-│   ├── topodise_experiments/       # TopoDiSE main / ablation / DM
-│   ├── paper_baseline_experiments.json
-│   └── unified_stage2_encoder_comparison/
-├── gnn/                          # GNN 与双视角模型
-├── multitasklearning/            # MTL-MAE 模型
-├── topodise/                     # TopoDiSE 核心实现
-├── unet/                         # CORN-1 nnU-Net 分割流程
-└── requirements.txt              # 唯一依赖文件
-```
-
-## 1. 环境
-
-建议 Python 3.10–3.12。只需使用根目录的一个依赖文件：
+在 `codes/` 下安装依赖，并使用与设备匹配的 PyTorch：
 
 ```bash
-cd codes
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-CUDA 机器可先按 PyTorch 官方说明安装与驱动匹配的 `torch` / `torchvision`，再执行上述 requirements。历史最佳 parent 的参考环境是 Python 3.10.19、PyTorch 2.9.1+cu128、cuDNN 91002 和 RTX A6000；其他设备可复现配置和损失轨迹，但不承诺 checkpoint 逐字节相同。
-
-## 2. 数据
-
-将已授权数据放置为：
+将授权数据放在下面的目录中，JSON 图像路径相对于 `datasets/`：
 
 ```text
 datasets/
@@ -58,139 +23,143 @@ datasets/
 └── unlabeled_dataset_en/unlabeled_dataset_en.json
 ```
 
-JSON 内图像路径应相对于 `datasets/` 有效。CORN-1 需按原数据许可单独获取。
+数据和训练权重不随仓库提供。需要 ImageNet 初始化的配置会读取本地缓存或下载权重；下载失败时实验报错，不会自动改成随机初始化。
 
-UNet-only、UNet-dual 和 GNN 依赖 `pd_dataset_unet_en`。如果未颈先生成，可按 [unet/README.md](unet/README.md) 先训练 CORN-1 nnU-Net，再运行：
+## 目录与统一入口
 
-```bash
-cd unet
-python prepare_dataset.py
-python train.py --profile baseline
-python build_pd_unet_dataset.py
-cd ..
-```
+每个实验家族及 TopoDiSE 阶段目录只保留两个 Python 文件：`main.py` 包含单组实验、DM 实验及 TD-rest 二分类逻辑，`batch_experiments.py` 控制批量运行。实验参数直接写在各目录的 `batch_experiments.py` 中；不再从外部 JSON 读取默认配置。公共进程执行工具和阶段配置类型放在 `experiments/` 根目录，不再保留独立的 `dm_runner.py`、`dm_transfer.py` 或 `subtype_hierarchy_runner.py`。
 
-## 3. 复现 TopoDiSE Stage0 / Stage1 最佳 parent
-
-论文 main tasks 和 DM 迁移统一使用 stage/subtype 最佳组对应的 parent recipe：`c8bf6b548656`。它在 Stage0 使用 CORN-1 `hgrad` 监督，Stage1 使用 PD control/control-cataract region pairs，并从 Stage0 的原始 encoder 权重初始化。
-
-从 Stage0 开始运行：
-
-```bash
-python -m experiments.topodise_experiments.reproduce_c8bf6b548656 \
-  --data-root datasets \
-  --output-dir results/reproduce_c8bf6b548656 \
-  --device auto
-```
-
-默认 Stage0 200 epochs、Stage1 80 epochs。中断后使用 `--resume`；只运行某一阶段可使用 `--stage 0` 或 `--stage 1 --parent-ckpt PATH`。专用入口会记录解析后配置、数据指纹、RNG 状态和 checkpoint SHA256。完整参考信息见 [REPRODUCE_C8BF6B548656.md](experiments/topodise_experiments/REPRODUCE_C8BF6B548656.md)。
-
-### 可复现开关
-
-Stage0/Stage1 只保留 `reproducibility` 开关，并且该开关只控制一个行为：
-开启时在每个阶段初始化处执行 `torch.manual_seed(42)`；关闭时不设置任何
-seed，直接使用环境的 RNG 状态。两种模式都不设置 Python/NumPy seed，也不
-修改任何 PyTorch/CUDA 后端开关。检查点始终保存 PyTorch CPU/CUDA RNG 状态，
-断点续训时始终优先恢复该状态，不受此开关影响。
-
-| 配置 | Stage0/Stage1 初始化 | 适用场景 |
+| 实验家族 | 目录 | 保留内容 |
 |---|---|---|
-| `reproducibility: true` | 执行 `torch.manual_seed(42)` | 复刻与固定起始随机流 |
-| `reproducibility: false` | 不主动设置 seed | 普通训练与迁移测试 |
+| ResNet18 | `experiments/basic_experiments/` | binary、stage、subtype、DM |
+| SimCLR | `experiments/simclr_experiments/` | binary、stage、subtype、DM；保留预训练 |
+| MTL-MAE | `experiments/mtl_experiments/` | binary、stage、subtype、DM；保留多任务预训练 |
+| Prototype | `experiments/prototype_experiments/` | binary、stage、subtype |
+| U-Net-only / U-Net-dual | `experiments/unet_experiments/` | 分割图单独分类 / 原图与分割图融合分类 |
+| GNN | `experiments/gnn_experiments/` | 分割图骨架转图后的 GAT 分类 |
+| TopoDiSE | `experiments/topodise_experiments/` | Stage0/1/2、主任务、消融、DM |
 
-该开关不表示完全确定性训练，也不会启用 deterministic algorithms；它只决定
-是否执行上述一次 PyTorch seed 初始化。
+`unet/` 包含 CORN-1 nnU-Net 训练、推理、评估、PD 分割数据生成，以及分类所需的模型和数据组件。U-Net-only / dual 的实验流程在 `experiments/unet_experiments/main.py`。`gnn/` 只包含骨架转图、图数据集、GNN 模型与训练。`utils/` 保留正式实验依赖的日志、绘图、患者级结果导出和亚型评估工具。
 
-专用复刻入口默认开启。普通训练如不需要固定 seed，可显式关闭：
+TopoDiSE 阶段的配置类型定义在 `experiments/_stage_configs.py`；实际运行参数在各 stage 的 `batch_experiments.py` 中编辑。旧配置导入路径由公共包兼容，供未改动的统一 Stage2 使用。
+
+`experiments/unified_stage2_encoder_comparison/` 保持原样，包括其配置、测试与现有入口，详见该目录的 [README](experiments/unified_stage2_encoder_comparison/README.md)。
+
+## U-Net 和 GNN 的共同预备条件
+
+**先使用 CORN-1 训练 nnU-Net，再用训练权重生成 PD 分割数据，最后运行分类实验。** U-Net-only、U-Net-dual 和 GNN 都依赖这一步。
+
+在 `codes/` 下按顺序执行：
 
 ```bash
-python -m experiments.topodise_experiments.reproduce_c8bf6b548656 \
-  --no-reproducibility
+# 1. CORN-1 转为 nnU-Net 数据格式
+python -m unet.prepare_dataset
+
+# 2. 预处理并训练全部 5 折
+python -m unet.train --profile baseline
+
+# 3. 使用训练好的分割模型处理 PD 原图，保留患者元数据及区域对应关系
+python -m unet.build_pd_unet_dataset
+
+# 4. 才开始 U-Net / GNN 分类实验
+python -m experiments.unet_experiments.batch_experiments
+python -m experiments.gnn_experiments.batch_experiments
 ```
 
-## 4. TopoDiSE 论文实验
+生成结果为 `datasets/pd_dataset_unet_en/patients_dataset_en.json` 和其中引用的分割图。U-Net-dual 还需要对齐的 `pd_dataset_en` 原图。两类入口会检查清单及图像是否存在。已按上述流程生成的完整分割数据可直接迁移使用；分类时无需再次加载分割模型。训练恢复和推理参数见 [unet/README.md](unet/README.md)。
 
-精确配置位于 `experiments/topodise_experiments/paper_experiments.json`，分为：
+## main 与 batch_experiments 的分工
 
-- `main_tasks`：binary、stage、subtype 三个主任务；
-- `ablation`：论文表格使用的 40 个 ablation；
-- `dm_transfer`：`DMMIL3F1_weak_strict_fdiff`。
+按 `original_codes` 的方式使用：**编辑 `batch_experiments.py`，然后运行它**。即使只跑一组，也在批量文件中选择该组。
 
-当前主任务采用唯一的正式患者级汇总策略：
+- `main.py` 实现训练、验证、迁移、TD-rest 二分类和结果输出，接收批量文件传入的配置。
+- `batch_experiments.py` 定义最佳参数、选择哪些实验、使用哪些 GPU、每卡并发数和输出目录。默认参数就是保留的最佳配置；消融实验保留对应的变量设置。
 
-- Stage 使用 U0/U1/U2 的 `fold_calibrated_entropy_routing`。对每个候选计算
-  `当前患者熵 - 该候选在当前折的平均熵`，选择校准熵最低者；不再生成原始
-  最低熵、多数投票、均值融合或标签 oracle 路由。
-- TD_REST subtype 使用 TDREST0/1/2/5/7 的
-  `majority_vote_tie_avg_prob`，不使用校准熵路由。
+每个批量文件顶部可直接修改：
 
-校准熵不读取标签，但需要一个患者群体估计候选基准熵。部署到独立单患者时，
-应固定使用训练集或独立校准集得到的基准熵，不能用单个测试患者重新估计。
-
-先检查将要运行的配置：
-
-```bash
-RUN_PAPER_SECTION=main_tasks \
-python -m experiments.topodise_experiments.batch_experiments --dry-run
+```python
+AVAILABLE_GPUS = [0]       # 一张卡；[0, 1] 两张卡；[] 使用 CPU
+CONCURRENCY_PER_GPU = 1    # 每张卡同时运行几组实验；每组实验使用一张卡
+NUM_WORKERS = 0            # DataLoader worker 数；TopoDiSE 默认 4
+OUTPUT_DIR = 'results/basic'
+RUN_GROUPS = []            # 留空运行全部，或填入 EXPERIMENTS 中的 _group 名称
 ```
 
-分别运行：
+下方 `EXPERIMENTS` 字典列表包含学习率、训练轮数、batch size、随机种子、任务及交叉验证等参数。参数修改会原样传给执行进程，结果目录同时保存这份配置。TopoDiSE 总入口使用 `RUN_SECTION` 选择主任务/消融/DM，并将各分区列表汇总到 `EXPERIMENTS`。
+
+## Baseline 任务约定
+
+七种 baseline（basic、SimCLR、MTL、Prototype、GNN、U-Net-only、U-Net-dual）均包含：
+
+| 任务 | 实际执行 |
+|---|---|
+| `pd_binary` | PD 二分类 |
+| `pd_stage` | PD 分期分类 |
+| `pd_subtype` | **TD-rest 二分类**：TD=0，Rest（PIGD+mixed）=1 |
+
+`pd_subtype` 配置明确设置 `_subtype_protocol='td_rest'`，只训练 TD-rest head，不再执行 PIGD-vs-Mixed 或合成三分类。保留原 TD-rest 分支的训练参数和患者级 5-fold × 3 划分；输出二分类 accuracy、balanced accuracy、macro F1、AUC、混淆矩阵和患者概率。新实验组名使用 `subtype_td_rest`，避免与旧层级三分类结果混淆。
+
+三种方法各有 3 个 seed 的 `dm_binary` 配置，来源在批量文件 `_transfer_source` 中明确：
+
+| 方法 | DM 初始化/迁移来源 |
+|---|---|
+| basic | `imagenet`：ImageNet 初始化后在 DM 上训练；**不是 PD 检查点→DM** |
+| SimCLR | `pd_simclr`：PD 自监督预训练 backbone→DM |
+| MTL | `pd_corn1_mtl`：PD+CORN-1 多任务预训练 encoder→DM |
+
+TopoDiSE 的任务、集成和消融配置，以及受保护的统一 Stage2 项目保持不变。
+
+## Baseline 运行
 
 ```bash
-RUN_PAPER_SECTION=main_tasks python -m experiments.topodise_experiments.batch_experiments
-RUN_PAPER_SECTION=ablation python -m experiments.topodise_experiments.batch_experiments
-RUN_PAPER_SECTION=dm_transfer python -m experiments.topodise_experiments.batch_experiments
+# 列出实验或预览参数
+python -m experiments.basic_experiments.batch_experiments --list
+python -m experiments.basic_experiments.batch_experiments --dry-run
+# 只运行指定组，使用 GPU 0
+python -m experiments.basic_experiments.batch_experiments \
+  --group P11_resnet18_patient_acc_seed42 --gpus 0
+# 使用两张卡，每卡同时运行一组
+python -m experiments.basic_experiments.batch_experiments --gpus 0,1 --concurrency-per-gpu 1
 ```
 
-当本地不存在 parent 时，Stage2 定义会创建并复用同一个 `c8bf6b548656` Stage0/1 parent。机器参数可通过 `RUN_OUTPUT_DIR`、`RUN_NUM_WORKERS`、`RUN_AVAILABLE_GPUS`、`RUN_PARALLEL_EXPERIMENTS` 设置。
-
-## 5. 论文 baseline
-
-所有 baseline 的公开配置只来自 `experiments/paper_baseline_experiments.json`；批处理脚本不再构造历史扫参网格。
-
-| 方法 | 入口 | 保留的论文实验 |
-|---|---|---|
-| ResNet18 | `basic_experiments.batch_experiments` | binary/stage 3 seeds，subtype 5-fold x3，DM 3 seeds |
-| SimCLR | `simclr_experiments.batch_experiments` | binary 3 seeds，CORN-1 stage 3 seeds，subtype 5-fold x3，DM 3 seeds |
-| UNet-only | `gnn_experiments.batch_experiments` | binary/stage 3 seeds，subtype 5-fold x3 |
-| UNet-dual | `gnn_experiments.dual_stream_batch` | binary/stage 3 seeds，subtype 5-fold x3 |
-| GNN | `gnn_experiments.gnn_batch` | binary/stage 3 seeds，subtype 5-fold x3 |
-| MTL-MAE | `mtl_experiments.batch_experiments` | binary/stage 3 seeds，subtype 5-fold x3，DM 3 seeds |
-| Prototype | `prototype_experiments.batch_experiments` | binary 3 seeds，stage 3 seeds，subtype 5-fold x3 |
-
-在一台普通 CUDA 机器上，可用 `RUN_SITE=auto` 自动检测 GPU：
+其他家族用相同方式运行：
 
 ```bash
-RUN_SITE=auto RUN_CONCURRENCY_PER_GPU=1 python -m experiments.basic_experiments.batch_experiments
-RUN_SITE=auto RUN_CONCURRENCY_PER_GPU=1 python -m experiments.simclr_experiments.batch_experiments
-RUN_SITE=auto RUN_CONCURRENCY_PER_GPU=1 python -m experiments.gnn_experiments.batch_experiments
-RUN_SITE=auto RUN_CONCURRENCY_PER_GPU=1 python -m experiments.gnn_experiments.dual_stream_batch
-RUN_SITE=auto RUN_CONCURRENCY_PER_GPU=1 python -m experiments.gnn_experiments.gnn_batch
-RUN_SITE=auto RUN_CONCURRENCY_PER_GPU=1 python -m experiments.mtl_experiments.batch_experiments
-RUN_SITE=auto RUN_CONCURRENCY_PER_GPU=1 python -m experiments.prototype_experiments.batch_experiments
-```
-
-不设 `RUN_INCLUDE_GROUPS` 时运行该方法全部论文配置。如只运行一组，使用 manifest 中的精确 `_group`：
-
-```bash
-RUN_SITE=auto \
-RUN_INCLUDE_GROUPS=P11_c304_pd_patient_acc_seed42 \
 python -m experiments.simclr_experiments.batch_experiments
+python -m experiments.mtl_experiments.batch_experiments
+python -m experiments.prototype_experiments.batch_experiments
+python -m experiments.gnn_experiments.batch_experiments
+python -m experiments.unet_experiments.batch_experiments --variant unet_only
+python -m experiments.unet_experiments.batch_experiments --variant unet_dual
 ```
 
-CPU 也可使用 `RUN_SITE=local`，但完整 5-fold x3 训练会很慢。默认结果位于 `results/`，可用 `RUN_OUTPUT_DIR` 覆盖。
+U-Net 的 `VARIANT` 默认 `all`，两种分类方法各保留 4 组。命令行可覆盖 `--group`（逗号分隔多组）、`--gpus`、`--concurrency-per-gpu`、`--num-workers` 和 `--output-dir`；`--gpus cpu` 使用 CPU。`--list` / `--dry-run` 不启动训练。
 
-## 6. 统一 Stage2 编码器比较
+公共 `_execution.py` 只提供进程执行、GPU 槽位和日志机制，不保存实验选择或模型参数。它将批量文件提供的完整配置写入结果目录，调用同目录 `main.py --config ...` 执行，避免参数在子进程中被旧默认值覆盖。训练日志与 `batch_summary.json` 保存在输出目录，失败返回非零状态。
 
-该协议在同一 patient-level Stage2 流程中比较冻结的 TopoDiSE、SimCLR ResNet-18 和 DINOv2。TopoDiSE 仍使用统一 `c8bf6b548656` parent。审计、smoke test、单机运行、断点续跑和分析命令见 [unified_stage2_encoder_comparison/README.md](experiments/unified_stage2_encoder_comparison/README.md)。
+## TopoDiSE
 
-## 7. 快速校验
+总入口的 `batch_experiments.py` 直接包含 3 个主任务、40 组消融和 1 组 DM 迁移的完整配置。`main.py` 实现阶段衔接、训练恢复、分类和集成；批量文件控制共享预训练去重、任务顺序和多卡调度。
 
 ```bash
-python -m compileall -q core gnn multitasklearning topodise unet experiments
-python -m unittest experiments.unified_stage2_encoder_comparison.tests.test_protocol
-python -m experiments.unified_stage2_encoder_comparison.smoke_test \
-  --config experiments/unified_stage2_encoder_comparison/configs/protocol_v1.yaml
+python -m experiments.topodise_experiments.batch_experiments --section main_tasks
+python -m experiments.topodise_experiments.batch_experiments --section ablation --gpus 0,1
+python -m experiments.topodise_experiments.batch_experiments --section dm_transfer
+python -m experiments.topodise_experiments.batch_experiments --section all --dry-run
 ```
 
-报告结果时应同时保留：数据/配置 hash、checkpoint SHA256、patient-level fold predictions 和软件环境。
+总入口缺少父检查点时会自动生成并共享 Stage0/1 权重；可在批量文件的 `EXTERNAL_PARENT_CKPT` 指定已有 Stage1 权重。Stage0/1 训练独占一张卡，Stage2 根据每卡并发数调度。Stage 集成保留 U0/U1/U2 的熵路由，subtype 集成保留 TDREST0/1/2/5/7 的多数投票。
+
+三个 stage 也有各自独立的批量配置：
+
+```bash
+python -m experiments.topodise_experiments.stage0_corn1_pretrain.batch_experiments
+# 将 Stage0 实际输出的 ema_best.pt 填入 Stage1 批量文件 config.parent_ckpt
+python -m experiments.topodise_experiments.stage1_rscp_finetune.batch_experiments
+# 将 Stage1 实际输出的 ema_best.pt 填入 Stage2 批量文件 PARENT_CKPT
+python -m experiments.topodise_experiments.stage2_racf_downstream.batch_experiments
+```
+
+Stage0 默认使用最佳配方的 200 epochs，Stage1 为 80 epochs；各训练参数均在对应批量文件中。独立 Stage2 只运行已有 Stage1 检查点上的下游任务，不自动重训前序阶段；完整消融从总入口选择。复现参数和参考记录见 [最佳预训练配置说明](experiments/topodise_experiments/REPRODUCE_C8BF6B548656.md)。
+
+完整实验仍需授权数据与相应训练设备。

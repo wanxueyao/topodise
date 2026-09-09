@@ -1,15 +1,5 @@
-"""
-prototypical_classifier.py - 小样本原型学习分类器
-
-实现内容
---------
-1. 轻量化 Backbone + 投影头作为特征编码器
-2. Episodic 采样（Support / Query）
-3. 原型计算与欧氏距离分类
-4. 交叉熵优化（最小化 query 到同类 prototype 的距离）
-"""
+"""ResNet18 episodic prototype classifier and patient-level evaluation."""
 import copy
-import os
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
@@ -20,40 +10,27 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import transforms
 
-from core.light_models import (
-    LIGHT_BACKBONE_CONFIG,
-    get_image_size_light,
-    get_light_backbone,
-    get_light_backbone_feature_dim,
-)
 from core.basic_models import (
     get_backbone as _get_basic_backbone,
     get_backbone_feature_dim as _get_basic_feature_dim,
     get_image_size as _get_basic_image_size,
 )
-from core.light_trainer import EarlyStopping
+from core.classification_trainer import EarlyStopping
 
 
 # Backbone 路由：使用 basic_models 的名称集合
-_BASIC_BACKBONE_NAMES = {'densenet121', 'resnet18', 'resnet34', 'efficientnet'}
 
 
 def _get_backbone(backbone: str, pretrained) -> nn.Module:
-    if backbone in _BASIC_BACKBONE_NAMES:
-        return _get_basic_backbone(backbone, pretrained)
-    return get_light_backbone(backbone, pretrained)
+    return _get_basic_backbone(backbone, pretrained)
 
 
 def _get_feature_dim(backbone: str) -> int:
-    if backbone in _BASIC_BACKBONE_NAMES:
-        return _get_basic_feature_dim(backbone)
-    return get_light_backbone_feature_dim(backbone)
+    return _get_basic_feature_dim(backbone)
 
 
 def _get_image_size(backbone: str, pretrained) -> tuple:
-    if backbone in _BASIC_BACKBONE_NAMES:
-        return _get_basic_image_size(backbone, pretrained)
-    return get_image_size_light(backbone, pretrained)
+    return _get_basic_image_size(backbone, pretrained)
 
 
 TASK_CONFIG = {
@@ -106,7 +83,7 @@ class ProtoClassifierConfig:
     """原型学习分类器配置"""
 
     ARCHITECTURE: Literal['single_stream', 'mixed_single_stream', 'dual_stream'] = 'single_stream'
-    BACKBONE: Literal['mobilevit_xxs', 'mobilevit_xs', 'vanillanet_5', 'efficientnet_b0', 'densenet121', 'resnet18'] = 'densenet121'
+    BACKBONE: Literal['resnet18'] = 'resnet18'
     PRETRAINED: Literal[True, False, 'Half'] = True
 
     EMBEDDING_DIM: Literal[128, 256] = 128

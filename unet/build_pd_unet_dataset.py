@@ -12,7 +12,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from predict import load_predictor, predict_single
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from unet.predict import load_predictor, predict_single
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}

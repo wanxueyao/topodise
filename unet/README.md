@@ -1,6 +1,6 @@
 # CORN-1 nnU-Net 分割流程
 
-本目录是基于 nnU-Net v2 的 CORN-1 角膜内皮细胞边界分割流程，包含数据转换、训练、推理、评估，以及可选的 PD 图像分割版数据集生成脚本。所有路径和 nnU-Net 运行目录默认都收敛在 `codes/unet/` 下，便于迁移和复现实验。
+本目录是基于 nnU-Net v2 的 CORN-1 角膜内皮细胞边界分割流程，包含数据转换、训练、推理、评估和 PD 图像分割版数据集生成脚本，以及 U-Net-only / U-Net-dual 分类实现。所有路径和 nnU-Net 运行目录默认都收敛在 `codes/unet/` 下，便于迁移和复现实验。
 
 ## 当前文件结构
 
@@ -84,7 +84,7 @@ python prepare_dataset.py --no_val_merge
 
 ### 2. 训练 nnU-Net
 
-默认 `--profile dgx-spark` 会使用偏单卡的保守配置：复用已有预处理、默认 250 epoch trainer、默认不导出 `.npz`，并跳过部分耗时校验。需要原始 nnU-Net 行为时使用 `--profile baseline`。
+默认 `--profile baseline` 使用原始 nnU-Net 训练行为。可选 `--profile dgx-spark` 会复用已有预处理、使用 250 epoch trainer、默认不导出 `.npz` 并跳过部分校验；此选项会改变训练长度，论文准备流程使用 baseline。
 
 ```bash
 # 默认训练
@@ -156,7 +156,7 @@ python predict.py --input /path/to/tif_images/ --output /path/to/masks/ --fold 0
 Python API：
 
 ```python
-from codes.unet.predict import load_predictor, predict_single, predict_folder
+from unet.predict import load_predictor, predict_single, predict_folder
 
 predictor = load_predictor(
     model_dir="codes/unet/nnunet_data/nnUNet_results/Dataset001_Cornea",
@@ -212,3 +212,19 @@ python build_pd_unet_dataset.py \
 | `PIXEL_SPACING` | `(1.0, 1.0)` | NIfTI 转换时使用的显微图像像素间距。 |
 
 迁移模型到新机器时，复制 `nnUNet_results/Dataset001_Cornea`，然后通过 `predict.py --model` 指定路径即可。`predict.py` 会自动设置 `nnUNet_raw`、`nnUNet_preprocessed` 和 `nnUNet_results` 环境变量。
+
+## U-Net / GNN 分类实验的准备顺序
+
+U-Net-only、U-Net-dual 和 GNN 都必须先用 CORN-1 训练 nnU-Net，再运行 `build_pd_unet_dataset.py` 生成 PD 分割图。训练默认执行全部 5 折，生成数据时使用现有已完成的折集成推理。分类数据需要完整的患者清单和图像，U-Net-dual 还需要对应原图。已有按此流程生成的完整数据可以直接使用。
+
+也可全程从 `codes/` 运行，避免切换目录：
+
+```bash
+python -m unet.prepare_dataset
+python -m unet.train --profile baseline
+python -m unet.build_pd_unet_dataset
+python -m experiments.unet_experiments.batch_experiments --variant all
+python -m experiments.gnn_experiments.batch_experiments
+```
+
+U-Net-only / dual 实现位于本目录的 `only.py`、`dual.py`、`dual_view_*.py` 和亚型辅助模块中，通过 `experiments/unet_experiments/main.py` 与 `batch_experiments.py` 调用。

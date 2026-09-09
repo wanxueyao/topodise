@@ -1,5 +1,4 @@
 """Image transforms. Output single-channel tensors normalized to [-1, 1]."""
-from typing import Tuple
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 

@@ -1,66 +1,32 @@
-"""
-main.py - 原型学习实验主程序
+"""prototype 实验实现：训练、评估及单组执行；参数与批量控制见 batch_experiments.py。"""
 
-模块职责
---------
-执行单组配置下的完整 K-fold 交叉验证实验（小样本原型学习 Episodic Training）:
-1. 加载数据并生成 K-fold 划分
-2. 每个 fold 执行 Episodic 训练（支持集/查询集采样）
-3. 汇总指标 (Acc, F1, AUC)
-4. 生成可视化 (训练曲线、混淆矩阵、ROC)
-5. 输出实验报告 (Markdown 格式)
+if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from experiments._execution import single_main
+    single_main("experiments.prototype_experiments.main")
+    raise SystemExit(0)
 
-支持 Backbone
--------------
-- densenet121: 1024 维，来自 basic_models（推荐首选）
-- resnet18: 512 维，来自 basic_models
-- efficientnet_b0: 1280 维，来自 light_models
-- vanillanet_5: 4096 维，来自 light_models
-
-接口设计
---------
-输入:
-    ProtoExperimentConfig: 继承自 ProtoClassifierConfig，添加实验管理字段
-
-输出:
-    - results/<proto_backbone_arch_timestamp>/
-        - config.txt: 配置记录
-        - output.txt: 训练日志
-        - experiment_report.md: 实验报告
-        - *.png: 可视化图表
-        - best_model_*.pth: 最佳模型权重
-
-批量调用示例
-------------
-    >>> from main import run_single_experiment, ProtoExperimentConfig
-    >>>
-    >>> cfg = ProtoExperimentConfig()
-    >>> cfg.BACKBONE = 'densenet121'
-    >>> cfg.N_SHOT = 5
-    >>> result = run_single_experiment(cfg)
-"""
+from utils.td_rest import resolve_baseline_tasks, td_rest_rows, td_rest_fold, save_td_rest_results
 import sys
 import os
 import time
-import json
 import torch
 import numpy as np
 from datetime import datetime
 from collections import defaultdict
 from typing import Literal, List, Dict, Any, Optional
+from core.prototypical_classifier import FewShotPrototypicalClassifier, ProtoClassifierConfig, TASK_CONFIG
+from core.data_loader import PDDataset, load_and_filter_dataset, stratified_kfold
+from utils.patient_outputs import save_fold_patient_outputs, task_labels_for_indices
+from utils.misc import set_seed, Tee, save_config
+from utils.visualize import plot_confusion_matrix, plot_roc_auc, plot_training_curves
+
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from core.prototypical_classifier import (
-    FewShotPrototypicalClassifier,
-    ProtoClassifierConfig,
-    TASK_CONFIG,
-)
-from core.data_loader import PDDataset, load_and_filter_dataset, stratified_kfold
-from utils.patient_outputs import save_fold_patient_outputs, task_labels_for_indices
-from utils.misc import set_seed, Tee, create_output_dir, save_config
-from utils.visualize import plot_confusion_matrix, plot_roc_auc, plot_training_curves
 
 
 # ==================== 实验配置 ====================
@@ -76,13 +42,9 @@ class ProtoExperimentConfig(ProtoClassifierConfig):
         DATASET_MODE: 数据集模式
         DATASET_JSON: 数据集 JSON 路径
         OUTPUT_DIR: 输出目录
-        VANILLANET_INIT_ACT_NUM: VanillaNet 激活初始分支数
     """
     ARCHITECTURE: Literal['single_stream', 'mixed_single_stream', 'dual_stream'] = 'single_stream'
-    BACKBONE: Literal[
-        'densenet121', 'resnet18', 'efficientnet_b0', 'vanillanet_5',
-        'mobilevit_xxs', 'mobilevit_xs',
-    ] = 'densenet121'
+    BACKBONE: Literal['resnet18'] = 'resnet18'
     PRETRAINED: Literal[True, False, 'Half'] = True
 
     EMBEDDING_DIM: Literal[128, 256] = 128
@@ -121,7 +83,6 @@ class ProtoExperimentConfig(ProtoClassifierConfig):
     SEED: int = 42
     KFOLD_MODE: Literal['patient', 'image'] = 'patient'
 
-    VANILLANET_INIT_ACT_NUM: int = 3
 
     DEVICE: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     OUTPUT_DIR: str = 'results'
@@ -248,8 +209,8 @@ class ProtoExperimentRunner:
                 print(f"\n{'='*60}")
                 print(f"任务: {TASK_CONFIG[task]['name']}")
                 print('='*60)
-                if task == 'pd_subtype_hierarchy':
-                    results[task] = self._run_subtype_hierarchy(dataset)
+                if task == 'pd_subtype_tdrest':
+                    results[task] = self._run_subtype_td_rest(dataset)
                 else:
                     results[task] = self._run_kfold(dataset, task)
 
@@ -341,12 +302,12 @@ class ProtoExperimentRunner:
 
         return summary
 
-    def _run_subtype_hierarchy(self, dataset) -> Dict[str, Any]:
-        """按 TD-vs-rest -> PIGD-vs-Mixed 层级协议计算 patient-level 三分类准确率。"""
+    def _run_subtype_td_rest(self, dataset) -> Dict[str, Any]:
+        """按 TD-vs-rest 二分类协议计算 patient-level 准确率。"""
         config = self.config
         full_indices = [i for i, y in enumerate(dataset.subtype_labels) if int(y) >= 0]
         if not full_indices:
-            print("⚠ 无 subtype 标签样本，跳过 pd_subtype_hierarchy")
+            print("⚠ 无 subtype 标签样本，跳过 pd_subtype_tdrest")
             return {}
 
         full_pd = [1 for _ in full_indices]
@@ -359,7 +320,7 @@ class ProtoExperimentRunner:
         total_folds = config.NUM_FOLDS * config.KFOLD_REPEATS
 
         print(
-            f"层级 subtype 协议: patient {config.NUM_FOLDS}-fold x "
+            f"TD-rest subtype 协议: patient {config.NUM_FOLDS}-fold x "
             f"{config.KFOLD_REPEATS} repeats，共 {total_folds} folds"
         )
 
@@ -373,142 +334,36 @@ class ProtoExperimentRunner:
             ))
 
             for fold_idx, (train_local_idx, val_local_idx) in enumerate(splits, start=1):
-                print(f"\n--- Hierarchy Repeat {repeat} Fold {fold_idx}/{config.NUM_FOLDS} ---")
+                print(f"\n--- TD-rest Repeat {repeat} Fold {fold_idx}/{config.NUM_FOLDS} ---")
                 train_idx = [full_indices[int(i)] for i in train_local_idx]
                 val_idx = [full_indices[int(i)] for i in val_local_idx]
-                train_pm_idx = [i for i in train_idx if int(dataset.subtype_labels[i]) in (1, 2)]
-                val_pm_idx = [i for i in val_idx if int(dataset.subtype_labels[i]) in (1, 2)]
 
                 td_train = torch.utils.data.Subset(dataset, train_idx)
                 full_val = torch.utils.data.Subset(dataset, val_idx)
-                pm_train = torch.utils.data.Subset(dataset, train_pm_idx)
-                pm_val = torch.utils.data.Subset(dataset, val_pm_idx)
 
                 td_result = self.classifier.train(
                     td_train, full_val, 'pd_subtype_tdrest',
                     fold_idx=repeat * config.NUM_FOLDS + fold_idx,
-                    suffix='_hier_tdrest',
-                )
-                pm_result = self.classifier.train(
-                    pm_train, pm_val, 'pd_subtype_pigd_mixed',
-                    fold_idx=repeat * config.NUM_FOLDS + fold_idx,
-                    suffix='_hier_pigd_mixed',
+                    suffix='_td_rest',
                 )
 
                 td_pred = self.classifier.predict_with_prototypes(
                     td_result['model'], td_train, full_val, 'pd_subtype_tdrest'
                 )
-                pm_pred = self.classifier.predict_with_prototypes(
-                    pm_result['model'], pm_train, full_val, 'pd_subtype_pigd_mixed'
-                )
 
-                fold_metrics, fold_rows = self._compute_subtype_hierarchy_fold(
-                    dataset, val_idx, td_pred, pm_pred, repeat, fold_idx
-                )
-                fold_results.append(fold_metrics)
-                prediction_rows.extend(fold_rows)
+                pids = [int(dataset.patient_ids[i]) for i in val_idx]
+                by_pid = self._aggregate_patient_predictions(pids, td_pred, positive_class=1)
+                patient_map = {int(dataset.patient_ids[i]): {'subtype': ('TD', 'PIGD', 'mixed')[int(dataset.subtype_labels[i])]} for i in val_idx}
+                rows = td_rest_rows(patient_map, sorted(set(pids)),
+                                    {pid: v['pred'] for pid, v in by_pid.items()},
+                                    {pid: v['prob_positive'] for pid, v in by_pid.items()}, repeat, fold_idx)
+                fold_results.append(td_rest_fold(rows))
+                prediction_rows.extend(rows)
 
-                print(
-                    f"  HierAcc: {fold_metrics['subtype_hierarchy_acc']:.4f}, "
-                    f"BalAcc: {fold_metrics['subtype_hierarchy_balanced_acc']:.4f}, "
-                    f"TDRest: {fold_metrics['tdrest_acc']:.4f}, "
-                    f"PIGD/Mixed: {fold_metrics['pigd_mixed_acc']:.4f}"
-                )
+        return save_td_rest_results(self.output_dir, fold_results, prediction_rows,
+                                    config.NUM_FOLDS, config.KFOLD_REPEATS, config.SEED,
+                                    prefix='pd_subtype' + '')
 
-        summary = self._summarize_subtype_hierarchy(fold_results)
-        pred_path = os.path.join(self.output_dir, 'pd_subtype_hierarchy_predictions.csv')
-        json_path = os.path.join(self.output_dir, 'pd_subtype_hierarchy_summary.json')
-        self._write_hierarchy_predictions_csv(pred_path, prediction_rows)
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(summary, f, indent=2, ensure_ascii=False)
-        print(f"✓ 保存 hierarchy 预测: {pred_path}")
-        print(f"✓ 保存 hierarchy 汇总: {json_path}")
-
-        return {
-            'fold_results': fold_results,
-            'final_results': {
-                'avg_acc': summary['subtype_hierarchy_acc_mean'],
-                'std_acc': summary['subtype_hierarchy_acc_std'],
-                'avg_f1': summary['subtype_hierarchy_balanced_acc_mean'],
-                'std_f1': summary['subtype_hierarchy_balanced_acc_std'],
-                'tdrest_acc_mean': summary['tdrest_acc_mean'],
-                'tdrest_acc_std': summary['tdrest_acc_std'],
-                'pigd_mixed_acc_mean': summary['pigd_mixed_acc_mean'],
-                'pigd_mixed_acc_std': summary['pigd_mixed_acc_std'],
-                'auc_scores': {},
-            },
-            'hierarchy_summary': summary,
-            'prediction_csv': pred_path,
-        }
-
-    def _compute_subtype_hierarchy_fold(
-        self,
-        dataset,
-        val_idx: List[int],
-        td_pred: Dict[str, Any],
-        pm_pred: Dict[str, Any],
-        repeat: int,
-        fold: int,
-    ) -> tuple:
-        pids = [int(dataset.patient_ids[i]) for i in val_idx]
-        true_subtypes = [int(dataset.subtype_labels[i]) for i in val_idx]
-        td_by_pid = self._aggregate_patient_predictions(pids, td_pred, positive_class=1)
-        pm_by_pid = self._aggregate_patient_predictions(pids, pm_pred, positive_class=1)
-
-        rows: List[Dict[str, Any]] = []
-        true_3cls, pred_3cls = [], []
-        td_true, td_hat = [], []
-        pm_true, pm_hat = [], []
-
-        for pid in sorted(set(pids)):
-            idx = pids.index(pid)
-            y = int(true_subtypes[idx])
-            gate = int(td_by_pid[pid]['pred'])
-            pm = int(pm_by_pid[pid]['pred'])
-            final_pred = 0 if gate == 0 else (1 if pm == 0 else 2)
-
-            true_3cls.append(y)
-            pred_3cls.append(final_pred)
-            td_true.append(0 if y == 0 else 1)
-            td_hat.append(gate)
-            if y in (1, 2):
-                pm_true.append(0 if y == 1 else 1)
-                pm_hat.append(pm)
-
-            rows.append({
-                'repeat': repeat,
-                'fold': fold,
-                'patient_id': pid,
-                'true_subtype': y,
-                'tdrest_pred': gate,
-                'tdrest_prob_rest': td_by_pid[pid]['prob_positive'],
-                'pigd_mixed_pred': pm,
-                'pigd_mixed_prob_mixed': pm_by_pid[pid]['prob_positive'],
-                'final_pred': final_pred,
-            })
-
-        per_class_3 = self._per_class_recall(true_3cls, pred_3cls, [0, 1, 2])
-        td_per_class = self._per_class_recall(td_true, td_hat, [0, 1])
-        pm_per_class = self._per_class_recall(pm_true, pm_hat, [0, 1])
-        cm_3 = self._confusion_matrix(true_3cls, pred_3cls, [0, 1, 2])
-
-        metrics = {
-            'repeat': repeat,
-            'fold': fold,
-            'n_val_full': len(set(pids)),
-            'n_val_td': sum(1 for y in true_3cls if y == 0),
-            'n_val_rest': sum(1 for y in true_3cls if y in (1, 2)),
-            'n_val_pigd_mixed': len(pm_true),
-            'tdrest_acc': float(np.mean(np.array(td_true) == np.array(td_hat))) if td_true else 0.0,
-            'tdrest_per_class_acc': td_per_class,
-            'pigd_mixed_acc': float(np.mean(np.array(pm_true) == np.array(pm_hat))) if pm_true else 0.0,
-            'pigd_mixed_per_class_acc': pm_per_class,
-            'subtype_hierarchy_acc': float(np.mean(np.array(true_3cls) == np.array(pred_3cls))) if true_3cls else 0.0,
-            'subtype_hierarchy_balanced_acc': float(np.mean(list(per_class_3.values()))) if per_class_3 else 0.0,
-            'subtype_hierarchy_per_class_acc': per_class_3,
-            'confusion_matrix_3cls': cm_3,
-        }
-        return metrics, rows
 
     @staticmethod
     def _aggregate_patient_predictions(pids: List[int], pred: Dict[str, Any], positive_class: int) -> Dict[int, Dict[str, Any]]:
@@ -528,60 +383,9 @@ class ProtoExperimentRunner:
             }
         return out
 
-    @staticmethod
-    def _per_class_recall(labels: List[int], preds: List[int], classes: List[int]) -> Dict[str, float]:
-        out = {}
-        for cls in classes:
-            total = sum(1 for y in labels if y == cls)
-            correct = sum(1 for y, p in zip(labels, preds) if y == cls and p == cls)
-            out[str(cls)] = float(correct / total) if total else 0.0
-        return out
 
-    @staticmethod
-    def _confusion_matrix(labels: List[int], preds: List[int], classes: List[int]) -> List[List[int]]:
-        pos = {cls: i for i, cls in enumerate(classes)}
-        cm = [[0 for _ in classes] for _ in classes]
-        for y, p in zip(labels, preds):
-            if y in pos and p in pos:
-                cm[pos[y]][pos[p]] += 1
-        return cm
 
-    def _summarize_subtype_hierarchy(self, fold_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        def mean_std(key: str) -> tuple:
-            vals = [float(r[key]) for r in fold_results]
-            return float(np.mean(vals) if vals else 0.0), float(np.std(vals) if vals else 0.0)
 
-        td_mean, td_std = mean_std('tdrest_acc')
-        pm_mean, pm_std = mean_std('pigd_mixed_acc')
-        h_mean, h_std = mean_std('subtype_hierarchy_acc')
-        hb_mean, hb_std = mean_std('subtype_hierarchy_balanced_acc')
-
-        return {
-            'protocol': 'patient_5fold_x3_subtype_hierarchy',
-            'num_folds': self.config.NUM_FOLDS,
-            'kfold_repeats': self.config.KFOLD_REPEATS,
-            'evaluated_folds': len(fold_results),
-            'tdrest_acc_mean': td_mean,
-            'tdrest_acc_std': td_std,
-            'pigd_mixed_acc_mean': pm_mean,
-            'pigd_mixed_acc_std': pm_std,
-            'subtype_hierarchy_acc_mean': h_mean,
-            'subtype_hierarchy_acc_std': h_std,
-            'subtype_hierarchy_balanced_acc_mean': hb_mean,
-            'subtype_hierarchy_balanced_acc_std': hb_std,
-            'fold_results': fold_results,
-        }
-
-    @staticmethod
-    def _write_hierarchy_predictions_csv(path: str, rows: List[Dict[str, Any]]):
-        fields = [
-            'repeat', 'fold', 'patient_id', 'true_subtype', 'tdrest_pred',
-            'tdrest_prob_rest', 'pigd_mixed_pred', 'pigd_mixed_prob_mixed', 'final_pred',
-        ]
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(','.join(fields) + '\n')
-            for row in rows:
-                f.write(','.join(str(row.get(field, '')) for field in fields) + '\n')
 
     def _summarize_results(self, fold_results: List[Dict], all_preds: Dict,
                            task_cfg: Dict, suffix: str) -> Dict[str, Any]:
@@ -839,41 +643,37 @@ def run_single_experiment(
 
 # ==================== 命令行入口 ====================
 
-if __name__ == '__main__':
-    import argparse
 
-    parser = argparse.ArgumentParser(description='原型学习实验')
-    parser.add_argument('--backbone', default='resnet18',
-                        choices=['resnet18', 'efficientnet_b0', 'densenet121', 'vanillanet_5'])
-    parser.add_argument('--arch', default='dual_stream',
-                        choices=['single_stream', 'mixed_single_stream', 'dual_stream'])
-    parser.add_argument('--pretrained', default='Half',
-                        choices=['True', 'False', 'Half'])
-    parser.add_argument('--n-way', type=int, default=3)
-    parser.add_argument('--n-shot', type=int, default=3)
-    parser.add_argument('--n-query', type=int, default=4)
-    parser.add_argument('--embedding-dim', type=int, default=128, choices=[128, 256])
-    parser.add_argument('--epochs', type=int, default=40)
-    parser.add_argument('--lr', type=float, default=5e-4)
-    parser.add_argument('--dataset-mode', default='pd_all',
-                        choices=['pd_control', 'pd_control_cataract', 'pd_all'])
-    parser.add_argument('--tasks', nargs='+', default=['pd', 'stage', 'subtype'])
-    parser.add_argument('--output-dir', default=None)
-    args = parser.parse_args()
-
-    _pretrained_map = {'True': True, 'False': False, 'Half': 'Half'}
-
+def build_paper_config(exp, device="cpu", num_workers=0):
+    """Translate a selected paper recipe without changing its hyperparameters."""
     cfg = ProtoExperimentConfig()
-    cfg.BACKBONE = args.backbone
-    cfg.ARCHITECTURE = args.arch
-    cfg.PRETRAINED = _pretrained_map[args.pretrained]
-    cfg.N_WAY = args.n_way
-    cfg.N_SHOT = args.n_shot
-    cfg.N_QUERY = args.n_query
-    cfg.EMBEDDING_DIM = args.embedding_dim
-    cfg.NUM_EPOCHS = args.epochs
-    cfg.LEARNING_RATE = args.lr
-    cfg.DATASET_MODE = args.dataset_mode
+    cfg.BACKBONE = exp.get('backbone', 'densenet121')
+    cfg.ARCHITECTURE = exp.get('architecture', 'single_stream')
+    cfg.PRETRAINED = exp.get('pretrained', True)
+    cfg.EMBEDDING_DIM = exp.get('embedding_dim', 128)
+    cfg.FEATURE_DROPOUT = exp.get('feature_dropout', 0.2)
+    cfg.N_WAY = exp.get('n_way', 3)
+    cfg.N_SHOT = exp.get('n_shot', 3)
+    cfg.N_QUERY = exp.get('n_query', 4)
+    cfg.TRAIN_EPISODES_PER_EPOCH = exp.get('train_episodes_per_epoch', 80)
+    cfg.VAL_EPISODES = exp.get('val_episodes', 80)
+    cfg.NUM_EPOCHS = exp.get('num_epochs', 40)
+    cfg.LEARNING_RATE = exp.get('learning_rate', 0.0005)
+    cfg.WEIGHT_DECAY = exp.get('weight_decay', 0.0001)
+    cfg.LR_SCHEDULER = exp.get('lr_scheduler', 'cosine')
+    cfg.KFOLD_MODE = exp.get('kfold_mode', 'patient')
+    cfg.PATIENCE = exp.get('patience', cfg.PATIENCE)
+    cfg.NUM_FOLDS = exp.get('num_folds', cfg.NUM_FOLDS)
+    cfg.KFOLD_REPEATS = exp.get('kfold_repeats', cfg.KFOLD_REPEATS)
+    cfg.SEED = exp.get('seed', cfg.SEED)
+    cfg.DATASET_MODE = exp.get('dataset_mode', cfg.DATASET_MODE)
+    cfg.DATASET_JSON = exp.get('dataset_json', cfg.DATASET_JSON)
+    cfg.NUM_WORKERS = num_workers
+    cfg.DEVICE = device
+    return cfg
 
-    result = run_single_experiment(cfg, tasks=args.tasks, output_dir=args.output_dir)
-    print(f"\n完成。输出目录: {result['meta']['output_dir']}")
+
+def run_paper_experiment(exp, output_dir, device="cpu", num_workers=0):
+    exp = resolve_baseline_tasks(exp)
+    cfg = build_paper_config(exp, device, num_workers)
+    return run_single_experiment(cfg, tasks=exp['_run_tasks'], output_dir=output_dir)

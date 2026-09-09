@@ -18,8 +18,7 @@ dual_view_model.py - 双视角单任务 CNN 模型
 import torch
 import torch.nn as nn
 
-from core.basic_models import get_backbone, get_backbone_feature_dim, BACKBONE_CONFIG
-from core.light_models import get_light_backbone, get_light_backbone_feature_dim, LIGHT_BACKBONE_CONFIG
+from core.basic_models import get_backbone, get_backbone_feature_dim
 
 
 DUAL_VIEW_TASK_CONFIG = {
@@ -32,15 +31,11 @@ DUAL_VIEW_TASK_CONFIG = {
 
 
 def _get_backbone(backbone: str, pretrained):
-    """自动路由到 basic_models 或 light_models。"""
-    if backbone in LIGHT_BACKBONE_CONFIG:
-        return get_light_backbone(backbone, pretrained)
+    """使用论文 ResNet18 骨干。"""
     return get_backbone(backbone, pretrained)
 
 
 def _get_feature_dim(backbone: str) -> int:
-    if backbone in LIGHT_BACKBONE_CONFIG:
-        return get_light_backbone_feature_dim(backbone)
     return get_backbone_feature_dim(backbone)
 
 
@@ -51,7 +46,7 @@ class DualViewModel(nn.Module):
 
     Args:
         task:              任务名 ('pd' | 'stage' | 'subtype')
-        backbone:          backbone 名称 ('resnet18'/'resnet34'/'efficientnet_b0' 等)
+        backbone:          backbone 名称 ('resnet18')
         pretrained:        预训练模式 (True / False / 'Half')
         shared_backbone:   True → en 和 unet 共享同一组 backbone 权重
         fusion_dim:        融合 MLP 隐层维度

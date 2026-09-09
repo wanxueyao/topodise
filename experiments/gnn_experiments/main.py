@@ -1,645 +1,674 @@
-"""
-main.py - GNN 实验主程序（使用 pd_dataset_unet_en 数据集）
+"""gnn 实验实现：训练、评估及单组执行；参数与批量控制见 batch_experiments.py。"""
+from __future__ import annotations
 
-模块职责
---------
-执行单组配置下的完整 K-fold 交叉验证实验:
-1. 加载 pd_dataset_unet_en 数据并生成 K-fold 划分
-2. 根据 backbone 类型自动选择分类器（basic / light）
-3. 逐 fold 训练和验证
-4. 汇总指标 (Acc, F1, AUC)
-5. 生成可视化 (训练曲线、混淆矩阵、ROC)
-6. 输出实验报告 (Markdown 格式)
+if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from experiments._execution import single_main
+    single_main("experiments.gnn_experiments.main")
+    raise SystemExit(0)
 
-支持的 Backbone
----------------
-- resnet18     → basic_classifier (无 dropout 参数，cosine scheduler)
-- efficientnet_b0 → light_classifier (dropout 0.3, label_smooth, adamw)
-
-数据集
-------
-默认使用 datasets/pd_dataset_unet_en/patients_dataset_en.json
-
-接口设计
---------
-输入接口:
-    - GNNExperimentConfig: 可通过修改类属性或继承来自定义配置
-    - run_single_experiment(config): 接受配置对象，返回结果字典
-
-批量实验调用示例:
-    >>> from main import GNNExperimentConfig, run_single_experiment
-    >>> cfg = GNNExperimentConfig()
-    >>> cfg.BACKBONE = 'resnet18'
-    >>> cfg.NUM_FOLDS = 2
-    >>> run_single_experiment(cfg, output_dir='results/test')
-"""
-import sys
+from utils.td_rest import resolve_baseline_tasks, td_rest_rows, td_rest_fold, save_td_rest_results
 import os
-import time
-import torch
+import sys
+import json
+import logging
+from dataclasses import dataclass, asdict
+from typing import List, Optional, Dict, Any
 import numpy as np
-from datetime import datetime
-from typing import Literal, List, Dict, Any, Optional
-
-# 添加项目根目录到路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from core.basic_classifier import PDClassifier, PDClassifierConfig, TASK_CONFIG
-from core.light_classifier import LightClassifier, LightClassifierConfig
-from core.data_loader import PDDataset, load_and_filter_dataset, stratified_kfold, KFoldMode
-from utils.patient_outputs import save_fold_patient_outputs, task_labels_for_indices
-from utils.misc import set_seed, Tee, create_output_dir, save_config
-from utils.visualize import plot_confusion_matrix, plot_roc_auc, plot_training_curves
-
-
-# ==================== Backbone 分组 ====================
-
-# 使用 basic_classifier 的 backbone
-BASIC_BACKBONES = {'resnet18', 'resnet34', 'densenet121', 'efficientnet'}
-
-# 使用 light_classifier 的 backbone
-LIGHT_BACKBONES = {'efficientnet_b0', 'mobilevit_xxs', 'mobilevit_xs', 'vanillanet_5'}
+import torch
+from core.data_loader import load_and_filter_dataset, stratified_kfold, SUBTYPE_MAP
+from utils.patient_outputs import save_fold_patient_outputs
+from gnn.classifier import GNNClassifier, GNNClassifierConfig
+from collections import defaultdict
+from copy import deepcopy
+from pathlib import Path
+from typing import Tuple
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from gnn.graph_dataset import NerveGraphDataset, collate_fn
+from gnn.models import GNNMultiTaskModel
+from gnn.trainer import batch_to_device
+from utils.misc import set_seed
+from utils.subtype_hierarchy import SUBTYPE_TO_3CLS, build_patient_5x3_subtype_folds, subtype_pigd_mixed_label, subtype_tdrest_label
 
 
-# ==================== 实验配置 ====================
 
+
+# ─── 路径配置 ─────────────────────────────────────────────────────────────────
+_CODES_DIR = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+if _CODES_DIR not in sys.path:
+    sys.path.insert(0, _CODES_DIR)
+
+
+
+# ─── 实验配置 ─────────────────────────────────────────────────────────────────
+
+@dataclass
 class GNNExperimentConfig:
+    """GNN 单次实验的全部超参数。"""
+    name: str = 'gnn_experiment'
+
+    # ── 数据 ────────────────────────────────────────────────────────────────────
+    dataset_json: str = 'datasets/pd_dataset_unet_en/patients_dataset_en.json'
+    dataset_group: str = 'pd_control'   # 见 DATASET_GROUPS
+    num_folds: int = 2
+    kfold_mode: str = 'patient'
+    graph_cache_dir: Optional[str] = None   # None = 自动使用 results/graph_cache
+
+    # ── 模型 ────────────────────────────────────────────────────────────────────
+    gnn_type: str = 'gat'           # 'gat'
+    hidden_dim: int = 64
+    num_layers: int = 2
+    num_heads: int = 4
+    shared_encoder: bool = False
+
+    # ── 训练 ────────────────────────────────────────────────────────────────────
+    lr: float = 1e-3
+    weight_decay: float = 1e-4
+    optimizer: str = 'adam'
+    lr_scheduler: str = 'cosine'
+    warmup_epochs: int = 5
+    epochs: int = 50
+    patience: int = 10
+    batch_size: int = 16
+    dropout: float = 0.2
+    classifier_dropout: float = 0.3
+
+    # ── 损失 ────────────────────────────────────────────────────────────────────
+    pd_loss_weight: float = 1.0
+    stage_loss_weight: float = 0.5
+    subtype_loss_weight: float = 0.5
+    label_smoothing: float = 0.0
+
+    # ── 其他 ────────────────────────────────────────────────────────────────────
+    primary_task: str = 'pd'        # 'pd' | 'stage' | 'subtype'
+    num_workers: int = 0
+    seed: int = 42
+    reuse_checkpoints: bool = True
+
+
+# ─── 日志设置 ─────────────────────────────────────────────────────────────────
+
+def _setup_logging(output_dir: str, name: str) -> None:
+    os.makedirs(output_dir, exist_ok=True)
+    log_path = os.path.join(output_dir, f'{name}.log')
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s %(message)s',
+        handlers=[
+            logging.FileHandler(log_path, mode='w', encoding='utf-8'),
+            logging.StreamHandler(),
+        ],
+        force=True,
+    )
+
+
+# ─── 指标汇总 ─────────────────────────────────────────────────────────────────
+
+def _summarize(
+    fold_results: List[Dict],
+    config: GNNExperimentConfig,
+    tasks: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """计算 K-fold 均值 ± 标准差汇总。"""
+    selected_tasks = tasks or ['pd', 'stage', 'subtype']
+    metric_keys = []
+    if 'pd' in selected_tasks:
+        metric_keys.extend(['pd_acc', 'pd_patient_acc', 'pd_balanced_acc', 'pd_f1', 'pd_auc'])
+    if 'stage' in selected_tasks:
+        metric_keys.extend(['stage_acc', 'stage_patient_acc', 'stage_balanced_acc', 'stage_f1', 'stage_auc'])
+    if 'subtype' in selected_tasks:
+        metric_keys.extend(['subtype_acc', 'subtype_patient_acc', 'subtype_balanced_acc', 'subtype_f1', 'subtype_auc'])
+    agg: Dict[str, float] = {}
+    for k in metric_keys:
+        vals = [r[k] for r in fold_results if k in r]
+        if vals:
+            agg[f'{k}_mean'] = float(np.mean(vals))
+            agg[f'{k}_std']  = float(np.std(vals))
+
+    return {
+        'name': config.name,
+        'config': asdict(config),
+        'num_folds': len(fold_results),
+        'fold_results': fold_results,
+        **agg,
+    }
+
+
+def _log_summary(summary: Dict, logger: logging.Logger) -> None:
+    def fmt(mk, sk):
+        return f"{summary.get(mk, 0):.4f} ± {summary.get(sk, 0):.4f}"
+
+    logger.info(
+        f"PD     | acc {fmt('pd_acc_mean', 'pd_acc_std')} | "
+        f"pat {fmt('pd_patient_acc_mean', 'pd_patient_acc_std')} | "
+        f"bacc {fmt('pd_balanced_acc_mean', 'pd_balanced_acc_std')} | "
+        f"f1 {fmt('pd_f1_mean', 'pd_f1_std')} | "
+        f"auc {fmt('pd_auc_mean', 'pd_auc_std')}"
+    )
+    logger.info(
+        f"Stage  | acc {fmt('stage_acc_mean', 'stage_acc_std')} | "
+        f"pat {fmt('stage_patient_acc_mean', 'stage_patient_acc_std')} | "
+        f"bacc {fmt('stage_balanced_acc_mean', 'stage_balanced_acc_std')} | "
+        f"f1 {fmt('stage_f1_mean', 'stage_f1_std')}"
+    )
+    logger.info(
+        f"Subtype| acc {fmt('subtype_acc_mean', 'subtype_acc_std')} | "
+        f"pat {fmt('subtype_patient_acc_mean', 'subtype_patient_acc_std')} | "
+        f"bacc {fmt('subtype_balanced_acc_mean', 'subtype_balanced_acc_std')} | "
+        f"f1 {fmt('subtype_f1_mean', 'subtype_f1_std')}"
+    )
+
+
+# ─── 主入口 ───────────────────────────────────────────────────────────────────
+
+def run_single_experiment(
+    config: GNNExperimentConfig,
+    output_dir: str = 'experiment_records',
+    tasks: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """
-    GNN 实验配置类（支持 basic / light 两类 backbone）
-
-    通过修改类属性来配置实验参数，批量实验时创建多个实例。
-
-    配置分组
-    --------
-    架构配置:
-        ARCHITECTURE: 'single_stream' / 'mixed_single_stream' / 'dual_stream'
-        BACKBONE: 'resnet18' / 'efficientnet_b0' 等
-        PRETRAINED: True / False / 'Half'
-
-    数据配置:
-        DATASET_MODE: 'pd_control' / 'pd_control_cataract' / 'pd_all'
-        DATASET_JSON: 数据集 JSON 文件路径（默认 pd_dataset_unet_en）
-
-    训练配置:
-        BATCH_SIZE, NUM_EPOCHS, LEARNING_RATE, WEIGHT_DECAY
-
-    学习率调度:
-        LR_SCHEDULER: 'cosine' / 'step' / 'warmup_cosine' / 'none'
-        LR_STEP_SIZE, LR_GAMMA
-        BACKBONE_LR_RATIO: backbone 学习率倍率（仅 basic 模式）
-        OPTIMIZER: 'adamw' / 'adam'（仅 light 模式）
-
-    正则化（仅 light backbone 生效）:
-        DROPOUT: 特征 Dropout
-
-    损失函数（仅 light backbone 生效）:
-        PD_LOSS_TYPE: 'ce' / 'label_smooth'
-        STAGE_LOSS_TYPE: 'ce' / 'label_smooth' / 'ordinal'
-        SUBTYPE_LOSS_TYPE: 'ce' / 'label_smooth'
-        LABEL_SMOOTH_EPS: 标签平滑 epsilon
-
-    早停:
-        EARLY_STOPPING: bool
-        PATIENCE: int
-
-    数据增强:
-        DATA_AUGMENTATION: bool
-        AUG_HORIZONTAL_FLIP, AUG_ROTATION, AUG_BRIGHTNESS, AUG_CONTRAST
-
-    交叉验证:
-        NUM_FOLDS: K-fold 的 K 值（默认 2）
-        SEED: 随机种子
-        KFOLD_MODE: 'patient' / 'image'
-
-    系统:
-        NUM_WORKERS: DataLoader 工作进程数
-        DEVICE: 'cuda' / 'cpu'
-        OUTPUT_DIR: 输出根目录
-    """
-    # 架构
-    ARCHITECTURE: Literal['single_stream', 'mixed_single_stream', 'dual_stream'] = 'dual_stream'
-    BACKBONE: str = 'resnet18'
-    PRETRAINED: Literal[True, False, 'Half'] = 'Half'
-
-    # 数据（默认使用 unet 分割版数据集）
-    DATASET_MODE: Literal['pd_control', 'pd_control_cataract', 'pd_all'] = 'pd_all'
-    DATASET_JSON: str = 'datasets/pd_dataset_unet_en/patients_dataset_en.json'
-
-    # 训练
-    BATCH_SIZE: int = 8
-    NUM_EPOCHS: int = 40
-    LEARNING_RATE: float = 2e-4
-    WEIGHT_DECAY: float = 3e-3
-
-    # 学习率调度
-    LR_SCHEDULER: str = 'cosine'     # basic 支持: step/cosine/none；light 支持: warmup_cosine/cosine/step
-    LR_STEP_SIZE: int = 15
-    LR_GAMMA: float = 0.5
-    BACKBONE_LR_RATIO: float = 0.05  # basic 模式下 backbone 学习率倍率
-    OPTIMIZER: str = 'adamw'         # light 模式下优化器
-
-    # 早停
-    EARLY_STOPPING: bool = True
-    PATIENCE: int = 6
-
-    # 正则化（light backbone 生效）
-    DROPOUT: float = 0.3
-
-    # 损失函数（light backbone 生效）
-    PD_LOSS_TYPE: str = 'ce'
-    STAGE_LOSS_TYPE: str = 'label_smooth'
-    SUBTYPE_LOSS_TYPE: str = 'ce'
-    LABEL_SMOOTH_EPS: float = 0.1
-
-    # 数据增强
-    DATA_AUGMENTATION: bool = True
-    AUG_HORIZONTAL_FLIP: float = 0.5
-    AUG_ROTATION: float = 6.0
-    AUG_BRIGHTNESS: float = 0.12
-    AUG_CONTRAST: float = 0.12
-    AUG_SATURATION: float = 0.0
-    AUG_HUE: float = 0.0
-
-    # 交叉验证
-    NUM_FOLDS: int = 2
-    SEED: int = 42
-    KFOLD_MODE: Literal['patient', 'image'] = 'patient'
-
-    # 系统
-    NUM_WORKERS: int = 4
-    DEVICE: str = 'cuda' if torch.cuda.is_available() else 'cpu'
-    OUTPUT_DIR: str = 'results'
-    REUSE_CHECKPOINTS: bool = True
-
-
-# ==================== 分类器工厂 ====================
-
-def _build_basic_classifier(cfg: GNNExperimentConfig) -> PDClassifier:
-    """根据 GNNExperimentConfig 构建 basic_classifier"""
-    basic_cfg = PDClassifierConfig()
-    basic_cfg.ARCHITECTURE = cfg.ARCHITECTURE
-    basic_cfg.BACKBONE = cfg.BACKBONE
-    basic_cfg.PRETRAINED = cfg.PRETRAINED
-    basic_cfg.BATCH_SIZE = cfg.BATCH_SIZE
-    basic_cfg.NUM_EPOCHS = cfg.NUM_EPOCHS
-    basic_cfg.LEARNING_RATE = cfg.LEARNING_RATE
-    basic_cfg.WEIGHT_DECAY = cfg.WEIGHT_DECAY
-    basic_cfg.LR_SCHEDULER = cfg.LR_SCHEDULER
-    basic_cfg.LR_STEP_SIZE = cfg.LR_STEP_SIZE
-    basic_cfg.LR_GAMMA = cfg.LR_GAMMA
-    basic_cfg.BACKBONE_LR_RATIO = cfg.BACKBONE_LR_RATIO
-    basic_cfg.EARLY_STOPPING = cfg.EARLY_STOPPING
-    basic_cfg.PATIENCE = cfg.PATIENCE
-    basic_cfg.DATA_AUGMENTATION = cfg.DATA_AUGMENTATION
-    basic_cfg.AUG_HORIZONTAL_FLIP = cfg.AUG_HORIZONTAL_FLIP
-    basic_cfg.AUG_ROTATION = cfg.AUG_ROTATION
-    basic_cfg.AUG_BRIGHTNESS = cfg.AUG_BRIGHTNESS
-    basic_cfg.AUG_CONTRAST = cfg.AUG_CONTRAST
-    basic_cfg.AUG_SATURATION = cfg.AUG_SATURATION
-    basic_cfg.AUG_HUE = cfg.AUG_HUE
-    basic_cfg.NUM_WORKERS = cfg.NUM_WORKERS
-    basic_cfg.DEVICE = cfg.DEVICE
-    return PDClassifier(basic_cfg)
-
-
-def _build_light_classifier(cfg: GNNExperimentConfig) -> LightClassifier:
-    """根据 GNNExperimentConfig 构建 light_classifier"""
-    light_cfg = LightClassifierConfig()
-    light_cfg.ARCHITECTURE = cfg.ARCHITECTURE
-    light_cfg.BACKBONE = cfg.BACKBONE
-    light_cfg.PRETRAINED = cfg.PRETRAINED
-    light_cfg.BATCH_SIZE = cfg.BATCH_SIZE
-    light_cfg.NUM_EPOCHS = cfg.NUM_EPOCHS
-    light_cfg.LEARNING_RATE = cfg.LEARNING_RATE
-    light_cfg.WEIGHT_DECAY = cfg.WEIGHT_DECAY
-    light_cfg.LR_SCHEDULER = cfg.LR_SCHEDULER
-    light_cfg.LR_STEP_SIZE = cfg.LR_STEP_SIZE
-    light_cfg.LR_GAMMA = cfg.LR_GAMMA
-    light_cfg.OPTIMIZER = cfg.OPTIMIZER
-    light_cfg.EARLY_STOPPING = cfg.EARLY_STOPPING
-    light_cfg.PATIENCE = cfg.PATIENCE
-    light_cfg.DROPOUT = cfg.DROPOUT
-    light_cfg.PD_LOSS_TYPE = cfg.PD_LOSS_TYPE
-    light_cfg.STAGE_LOSS_TYPE = cfg.STAGE_LOSS_TYPE
-    light_cfg.SUBTYPE_LOSS_TYPE = cfg.SUBTYPE_LOSS_TYPE
-    light_cfg.LABEL_SMOOTH_EPS = cfg.LABEL_SMOOTH_EPS
-    light_cfg.DATA_AUGMENTATION = cfg.DATA_AUGMENTATION
-    light_cfg.AUG_HORIZONTAL_FLIP = cfg.AUG_HORIZONTAL_FLIP
-    light_cfg.AUG_ROTATION = cfg.AUG_ROTATION
-    light_cfg.AUG_BRIGHTNESS = cfg.AUG_BRIGHTNESS
-    light_cfg.AUG_CONTRAST = cfg.AUG_CONTRAST
-    light_cfg.AUG_SATURATION = cfg.AUG_SATURATION
-    light_cfg.AUG_HUE = cfg.AUG_HUE
-    light_cfg.NUM_WORKERS = cfg.NUM_WORKERS
-    light_cfg.DEVICE = cfg.DEVICE
-    return LightClassifier(light_cfg)
-
-
-# ==================== 实验运行器 ====================
-
-class GNNExperimentRunner:
-    """
-    GNN 实验运行器（统一 basic / light 两类 backbone）
-
-    根据 backbone 自动选择对应分类器，其余流程与 basic_experiments 保持一致。
-    """
-
-    def __init__(self, config: GNNExperimentConfig):
-        self.config = config
-        self.output_dir: Optional[str] = None
-
-        if config.BACKBONE in LIGHT_BACKBONES:
-            self.classifier = _build_light_classifier(config)
-            self._mode = 'light'
-        else:
-            self.classifier = _build_basic_classifier(config)
-            self._mode = 'basic'
-
-    def run(self, tasks: Optional[List[str]] = None,
-            output_dir: Optional[str] = None) -> Dict[str, Any]:
-        """运行完整 K-fold 实验"""
-        set_seed(self.config.SEED)
-        start_time = time.time()
-
-        if tasks is None:
-            tasks = ['pd', 'stage', 'subtype']
-
-        self.output_dir = output_dir or create_output_dir('results', self.config)
-        os.makedirs(self.output_dir, exist_ok=True)
-        self.config.OUTPUT_DIR = self.output_dir
-        save_config(self.config, self.output_dir)
-
-        log_file = open(os.path.join(self.output_dir, 'output.txt'), 'w', encoding='utf-8')
-        original_stdout = sys.stdout
-        sys.stdout = Tee(original_stdout, log_file)
-
-        try:
-            results = self._execute_experiment(tasks)
-        finally:
-            sys.stdout = original_stdout
-            log_file.close()
-
-        duration = time.time() - start_time
-        results['meta'] = {
-            'config': self._config_to_dict(),
-            'duration': duration,
-            'output_dir': self.output_dir,
-        }
-
-        print(f"\n实验完成！用时 {duration / 60:.2f} 分钟")
-        print(f"结果保存到: {self.output_dir}")
-        return results
-
-    def _execute_experiment(self, tasks: List[str]) -> Dict[str, Any]:
-        config = self.config
-        self._print_header()
-
-        patients = load_and_filter_dataset(config.DATASET_JSON, config.DATASET_MODE)
-        print(f"\n加载 {len(patients)} 个患者（来自 {config.DATASET_JSON}）")
-
-        results = {}
-
-        if config.ARCHITECTURE == 'single_stream':
-            for task in tasks:
-                results[task] = {'regions': {}}
-                for region in ['central', 'whorl']:
-                    print(f"\n{'=' * 60}")
-                    print(f"任务: {TASK_CONFIG[task]['name']} | 区域: {region}")
-                    print('=' * 60)
-
-                    dataset = PDDataset(
-                        patients, 'single_stream',
-                        self.classifier.train_transform,
-                        region=region, base_path='datasets'
-                    )
-                    if len(dataset) == 0:
-                        print(f"⚠ 区域 {region} 无数据，跳过")
-                        continue
-
-                    print(f"样本数: {len(dataset)}")
-                    results[task]['regions'][region] = self._run_kfold(dataset, task, f"_{region}")
-        else:
-            dataset = PDDataset(
-                patients, config.ARCHITECTURE,
-                self.classifier.train_transform,
-                base_path='datasets'
-            )
-            if len(dataset) == 0:
-                print("⚠ 数据集为空")
-                return results
-
-            print(f"样本数: {len(dataset)}")
-            for task in tasks:
-                print(f"\n{'=' * 60}")
-                print(f"任务: {TASK_CONFIG[task]['name']}")
-                print('=' * 60)
-                results[task] = self._run_kfold(dataset, task)
-
-        self._generate_report(results)
-        return results
-
-    def _run_kfold(self, dataset, task: str, suffix: str = '') -> Dict[str, Any]:
-        config = self.config
-        task_cfg = TASK_CONFIG[task]
-
-        splits = list(stratified_kfold(
-            dataset.PD_labels, dataset.stage_labels, dataset.subtype_labels,
-            n_splits=config.NUM_FOLDS, random_state=config.SEED,
-            kfold_mode=config.KFOLD_MODE, patient_ids=dataset.patient_ids
-        ))
-
-        print(f"K-fold 模式: {config.KFOLD_MODE} (按{'患者' if config.KFOLD_MODE == 'patient' else '图像'}划分), "
-              f"K={config.NUM_FOLDS}")
-
-        fold_results = []
-        all_preds = {'labels': [], 'preds': [], 'probs': []}
-        best_models = []
-
-        for fold_idx, (train_idx, val_idx) in enumerate(splits):
-            print(f"\n--- Fold {fold_idx + 1}/{config.NUM_FOLDS} ---")
-
-            train_subset = torch.utils.data.Subset(dataset, train_idx)
-            val_subset = torch.utils.data.Subset(dataset, val_idx)
-
-            safe_suffix = suffix.replace('/', '_')
-            checkpoint_path = os.path.join(
-                self.output_dir, f"best_model_{task}{safe_suffix}_fold{fold_idx + 1}.pth"
-            )
-            result = self.classifier.train(
-                train_subset, val_subset, task,
-                fold_idx=fold_idx + 1, suffix=suffix,
-                checkpoint_path=checkpoint_path,
-                reuse_checkpoint=config.REUSE_CHECKPOINTS,
-            )
-
-            plot_training_curves(
-                result['train_history'],
-                task_cfg['name'] + suffix,
-                fold_idx + 1, self.output_dir
-            )
-
-            val_result = result['val_result']
-
-            if val_result['labels']:
-                patient_labels, patient_ids = task_labels_for_indices(dataset, val_idx, task)
-                patient_result = save_fold_patient_outputs(
-                    self.output_dir, task, suffix, fold_idx + 1,
-                    patient_ids, patient_labels,
-                    probs=val_result.get('probs'), logits=val_result.get('logits')
-                )
-                fold_results.append({
-                    'fold': fold_idx + 1,
-                    'train_acc': result['train_history']['train_acc'][-1] if 'train_acc' in result['train_history'] else 0.0,
-                    'acc': val_result['acc'],
-                    'patient_acc': patient_result['patient_acc'],
-                    'n_patients': patient_result['n_patients'],
-                    'patient_logits_json': patient_result['patient_logits_json'],
-                    'patient_logits_csv': patient_result['patient_logits_csv'],
-                    'precision': val_result['precision'],
-                    'recall': val_result['recall'],
-                    'f1': val_result['f1'],
-                })
-                all_preds['labels'].extend(val_result['labels'])
-                all_preds['preds'].extend(val_result['preds'])
-                if len(val_result['probs']) > 0:
-                    all_preds['probs'].extend(val_result['probs'].tolist())
-
-                print(f"  Acc: {val_result['acc']:.4f}, PatientAcc: {patient_result['patient_acc']:.4f}, F1: {val_result['f1']:.4f}")
-
-            best_models.append({
-                'fold': fold_idx + 1,
-                'state': result['model_state'],
-                'acc': val_result['acc'],
-            })
-            torch.save(result['model_state'], checkpoint_path)
-            print(f"✓ 保存 Fold {fold_idx + 1} 模型: {checkpoint_path}")
-
-        if not fold_results:
-            return {}
-
-        summary = self._summarize_results(fold_results, all_preds, task_cfg, suffix)
-
-        best = max(best_models, key=lambda x: x['acc'])
-        model_path = os.path.join(self.output_dir, f"best_model_{task}{suffix}.pth")
-        torch.save(best['state'], model_path)
-        print(f"✓ 保存最佳模型: {model_path}")
-
-        return summary
-
-    def _summarize_results(self, fold_results: List[Dict], all_preds: Dict,
-                           task_cfg: Dict, suffix: str) -> Dict[str, Any]:
-        task_name = task_cfg['name'] + suffix
-        class_names = task_cfg['class_names']
-
-        avg_train_acc = np.mean([r.get('train_acc', 0) for r in fold_results])
-        avg_acc = np.mean([r['acc'] for r in fold_results])
-        std_acc = np.std([r['acc'] for r in fold_results])
-        avg_patient_acc = np.mean([r.get('patient_acc', 0.0) for r in fold_results])
-        std_patient_acc = np.std([r.get('patient_acc', 0.0) for r in fold_results])
-        avg_f1 = np.mean([r['f1'] for r in fold_results])
-        std_f1 = np.std([r['f1'] for r in fold_results])
-
-        print(f"\n📊 {task_name}: TrainAcc={avg_train_acc:.4f}, "
-              f"ValAcc={avg_acc:.4f}±{std_acc:.4f}, "
-              f"PatientAcc={avg_patient_acc:.4f}±{std_patient_acc:.4f}, "
-              f"ValF1={avg_f1:.4f}±{std_f1:.4f}")
-
-        auc_scores = {}
-        if all_preds['labels']:
-            safe_name = task_name.replace(' ', '_').replace('/', '_')
-            unique_labels = sorted(set(all_preds['labels'] + all_preds['preds']))
-            actual_names = [class_names[l] if l < len(class_names) else str(l) for l in unique_labels]
-
-            plot_confusion_matrix(
-                all_preds['labels'], all_preds['preds'],
-                actual_names, safe_name, 0, self.output_dir, is_test=True
-            )
-
-            if all_preds['probs']:
-                auc = plot_roc_auc(
-                    all_preds['labels'],
-                    np.array(all_preds['probs']),
-                    actual_names, safe_name, self.output_dir
-                )
-                if isinstance(auc, dict):
-                    auc_scores = {actual_names[i]: auc[i] for i in auc if isinstance(i, int)}
-                else:
-                    auc_scores = {'overall': auc}
-                print(f"   AUC: {auc_scores}")
-
-        return {
-            'fold_results': fold_results,
-            'final_results': {
-                'avg_train_acc': avg_train_acc,
-                'avg_acc': avg_acc, 'std_acc': std_acc,
-                'avg_patient_acc': avg_patient_acc, 'std_patient_acc': std_patient_acc,
-                'avg_f1': avg_f1, 'std_f1': std_f1,
-                'auc_scores': auc_scores,
-            },
-            'all_predictions': all_preds,
-        }
-
-    def _print_header(self):
-        cfg = self.config
-        print("=" * 60)
-        print("GNN 实验 - pd_dataset_unet_en")
-        print("=" * 60)
-        print(f"架构: {cfg.ARCHITECTURE} | Backbone: {cfg.BACKBONE} | 分类器模式: {self._mode}")
-        print(f"预训练: {cfg.PRETRAINED} | 数据集: {cfg.DATASET_MODE}")
-        print(f"Epochs: {cfg.NUM_EPOCHS} | K-fold: {cfg.NUM_FOLDS} | K-fold模式: {cfg.KFOLD_MODE}")
-        print(f"LR: {cfg.LEARNING_RATE} | WD: {cfg.WEIGHT_DECAY} | Batch: {cfg.BATCH_SIZE}")
-        if self._mode == 'light':
-            print(f"Dropout: {cfg.DROPOUT} | Optimizer: {cfg.OPTIMIZER} | Stage Loss: {cfg.STAGE_LOSS_TYPE}")
-        print(f"LR Scheduler: {cfg.LR_SCHEDULER} | Early Stopping: patience={cfg.PATIENCE}")
-        if cfg.DATA_AUGMENTATION:
-            print(f"数据增强: 开启 (翻转={cfg.AUG_HORIZONTAL_FLIP}, 旋转={cfg.AUG_ROTATION}°, "
-                  f"亮度={cfg.AUG_BRIGHTNESS}, 对比度={cfg.AUG_CONTRAST})")
-        else:
-            print("数据增强: 关闭")
-        print("=" * 60)
-
-    def _generate_report(self, results: Dict):
-        report_path = os.path.join(self.output_dir, 'experiment_report.md')
-        cfg = self.config
-
-        with open(report_path, 'w', encoding='utf-8') as f:
-            f.write("# 实验报告（GNN / pd_dataset_unet_en）\n\n")
-            f.write(f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-            f.write(f"**数据集**: `{cfg.DATASET_JSON}`\n\n")
-
-            f.write("## 实验配置\n\n")
-            f.write("| 参数 | 值 |\n|---|---|\n")
-            f.write(f"| 架构 | `{cfg.ARCHITECTURE}` |\n")
-            f.write(f"| Backbone | `{cfg.BACKBONE}` |\n")
-            f.write(f"| 分类器模式 | `{self._mode}` |\n")
-            f.write(f"| 预训练 | `{cfg.PRETRAINED}` |\n")
-            f.write(f"| 数据集 | `{cfg.DATASET_MODE}` |\n")
-            f.write(f"| K-fold | {cfg.NUM_FOLDS} |\n")
-            f.write(f"| K-fold模式 | `{cfg.KFOLD_MODE}` |\n")
-            f.write(f"| Epochs | {cfg.NUM_EPOCHS} |\n")
-            f.write(f"| 学习率 | {cfg.LEARNING_RATE} |\n")
-            f.write(f"| Weight Decay | {cfg.WEIGHT_DECAY} |\n")
-            f.write(f"| Batch Size | {cfg.BATCH_SIZE} |\n")
-            f.write(f"| LR Scheduler | `{cfg.LR_SCHEDULER}` |\n")
-            f.write(f"| Early Stopping patience | {cfg.PATIENCE} |\n")
-            if self._mode == 'light':
-                f.write(f"| Dropout | {cfg.DROPOUT} |\n")
-                f.write(f"| Optimizer | `{cfg.OPTIMIZER}` |\n")
-                f.write(f"| Stage Loss | `{cfg.STAGE_LOSS_TYPE}` |\n")
-            f.write(f"| 数据增强 | `{'开启' if cfg.DATA_AUGMENTATION else '关闭'}` |\n")
-            if cfg.DATA_AUGMENTATION:
-                f.write(f"| - 水平翻转 | {cfg.AUG_HORIZONTAL_FLIP} |\n")
-                f.write(f"| - 旋转 | ±{cfg.AUG_ROTATION}° |\n")
-                f.write(f"| - 亮度抖动 | {cfg.AUG_BRIGHTNESS} |\n")
-                f.write(f"| - 对比度抖动 | {cfg.AUG_CONTRAST} |\n")
-            f.write("\n")
-
-            f.write("## 结果摘要\n\n")
-            f.write("| 任务 | 区域 | Accuracy | F1 Score |\n")
-            f.write("|---|---|---|---|\n")
-
-            for task, result in results.items():
-                if task == 'meta':
-                    continue
-                task_name = TASK_CONFIG[task]['name']
-                if 'regions' in result:
-                    for region, rr in result['regions'].items():
-                        if 'final_results' in rr:
-                            fr = rr['final_results']
-                            f.write(f"| {task_name} | {region} | "
-                                    f"{fr['avg_acc']:.4f}±{fr['std_acc']:.4f} | "
-                                    f"{fr['avg_f1']:.4f}±{fr['std_f1']:.4f} |\n")
-                elif 'final_results' in result:
-                    fr = result['final_results']
-                    f.write(f"| {task_name} | - | "
-                            f"{fr['avg_acc']:.4f}±{fr['std_acc']:.4f} | "
-                            f"{fr['avg_f1']:.4f}±{fr['std_f1']:.4f} |\n")
-
-            f.write("\n---\n\n## 详细结果\n\n")
-            for task, result in results.items():
-                if task == 'meta':
-                    continue
-                task_name = TASK_CONFIG[task]['name']
-                if 'regions' in result:
-                    for region, rr in result['regions'].items():
-                        self._write_task_section(f, task_name, region, rr)
-                elif 'final_results' in result:
-                    self._write_task_section(f, task_name, None, result)
-
-        print(f"✓ 生成报告: {report_path}")
-
-    def _write_task_section(self, f, task_name: str, region: Optional[str], result: Dict):
-        suffix = f"_{region}" if region else ""
-        display_name = f"{task_name}{suffix}" if region else task_name
-
-        f.write(f"### {display_name}\n\n")
-
-        if 'final_results' not in result:
-            f.write("*无有效结果*\n\n")
-            return
-
-        fr = result['final_results']
-        f.write("| 指标 | 值 |\n|---|---|\n")
-        f.write(f"| Accuracy | {fr['avg_acc']:.4f} ± {fr['std_acc']:.4f} |\n")
-        f.write(f"| F1 Score | {fr['avg_f1']:.4f} ± {fr['std_f1']:.4f} |\n")
-        f.write("\n")
-
-        if fr.get('auc_scores'):
-            f.write("**AUC**:\n")
-            for cls, auc_val in fr['auc_scores'].items():
-                f.write(f"- {cls}: {auc_val:.4f}\n")
-            f.write("\n")
-
-        safe_name = (task_name + suffix).replace(' ', '_').replace('/', '_')
-        cm_file = f"{safe_name}_Test_cm.png"
-        roc_file = f"{safe_name}_Test_roc.png"
-
-        if os.path.exists(os.path.join(self.output_dir, cm_file)):
-            f.write(f"**混淆矩阵**:\n\n![混淆矩阵]({cm_file})\n\n")
-        if os.path.exists(os.path.join(self.output_dir, roc_file)):
-            f.write(f"**ROC 曲线**:\n\n![ROC曲线]({roc_file})\n\n")
-
-        curve_files = [fn for fn in os.listdir(self.output_dir)
-                       if fn.startswith(f"{task_name}{suffix}_fold") and fn.endswith("_curves.png")]
-        if curve_files:
-            f.write("**训练曲线**:\n\n")
-            for curve_file in sorted(curve_files):
-                fold_num = curve_file.split('_fold')[1].split('_')[0]
-                f.write(f"Fold {fold_num}:\n\n![Fold{fold_num}训练曲线]({curve_file})\n\n")
-
-    def _config_to_dict(self) -> Dict[str, Any]:
-        return {
-            attr: getattr(self.config, attr)
-            for attr in dir(self.config)
-            if attr.isupper() and not attr.startswith('_')
-        }
-
-
-# ==================== 公共接口 ====================
-
-def run_single_experiment(config: Optional[GNNExperimentConfig] = None,
-                          tasks: Optional[List[str]] = None,
-                          output_dir: Optional[str] = None) -> Dict[str, Any]:
-    """
-    运行单次实验（批量实验入口）
+    运行单次 GNN 实验 (K-fold)。
 
     Args:
-        config: 实验配置，默认使用 GNNExperimentConfig()
-        tasks: 任务列表，默认 ['pd', 'stage', 'subtype']
-        output_dir: 输出目录，默认自动生成
+        config:     GNNExperimentConfig
+        output_dir: 实验结果保存根目录
+        tasks:      要汇总和保存 patient logits 的任务列表；None 表示全部任务
 
     Returns:
-        实验结果字典
+        summary: 包含各 fold 指标及均值 / 标准差的字典
     """
-    if config is None:
-        config = GNNExperimentConfig()
+    # ── 准备目录与日志 ───────────────────────────────────────────────────────────
+    exp_dir = os.path.join(output_dir, config.name)
+    os.makedirs(exp_dir, exist_ok=True)
+    _setup_logging(exp_dir, config.name)
+    logger = logging.getLogger(__name__)
 
-    runner = GNNExperimentRunner(config)
-    return runner.run(tasks=tasks, output_dir=output_dir)
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+    selected_tasks = tasks or ['pd', 'stage', 'subtype']
+
+    logger.info(f"=== GNN 实验: {config.name} ===")
+    logger.info(f"配置: {asdict(config)}")
+
+    # ── 加载患者数据 ─────────────────────────────────────────────────────────────
+    json_path = os.path.join(_CODES_DIR, config.dataset_json)
+    patients = load_and_filter_dataset(json_path, config.dataset_group)
+    logger.info(f"患者总数: {len(patients)}  (group={config.dataset_group})")
+
+    # ── 图缓存目录（所有实验共享，避免重复构建）────────────────────────────────────
+    cache_dir = config.graph_cache_dir
+    if cache_dir is None:
+        # 存放在 results/graph_cache 下，与数据集目录隔离，实验间共享
+        cache_dir = os.path.join(_CODES_DIR, 'results', 'graph_cache')
+    logger.info(f"图缓存目录: {cache_dir}")
+
+    # ── 提取患者级标签（用于 stratified kfold）───────────────────────────────────
+    # 每个 patient 当作一个"样本"，patient_ids[i] = i 使得 patient kfold 直接返回患者索引
+    pd_labels      = [1 if p['group'] == 'pd' else 0 for p in patients]
+    stage_labels   = [int(p.get('stage', 0)) for p in patients]
+    subtype_labels = [SUBTYPE_MAP.get(p.get('subtype') or '', -1) for p in patients]
+    patient_ids    = list(range(len(patients)))   # 每人唯一索引
+
+    # ── K-fold 划分 ──────────────────────────────────────────────────────────────
+    folds = list(stratified_kfold(
+        pd_labels=pd_labels,
+        stage_labels=stage_labels,
+        subtype_labels=subtype_labels,
+        n_splits=config.num_folds,
+        kfold_mode=config.kfold_mode,
+        patient_ids=patient_ids,
+    ))
+    logger.info(f"K-fold: {config.num_folds} folds (mode={config.kfold_mode})")
+
+    # ── 分类器配置 ───────────────────────────────────────────────────────────────
+    clf_cfg = GNNClassifierConfig(
+        gnn_type=config.gnn_type,
+        hidden_dim=config.hidden_dim,
+        num_layers=config.num_layers,
+        num_heads=config.num_heads,
+        shared_encoder=config.shared_encoder,
+        lr=config.lr,
+        weight_decay=config.weight_decay,
+        optimizer=config.optimizer,
+        lr_scheduler=config.lr_scheduler,
+        warmup_epochs=config.warmup_epochs,
+        epochs=config.epochs,
+        patience=config.patience,
+        batch_size=config.batch_size,
+        dropout=config.dropout,
+        classifier_dropout=config.classifier_dropout,
+        pd_loss_weight=config.pd_loss_weight,
+        stage_loss_weight=config.stage_loss_weight,
+        subtype_loss_weight=config.subtype_loss_weight,
+        label_smoothing=config.label_smoothing,
+        primary_task=config.primary_task,
+        graph_cache_dir=cache_dir,
+        num_workers=config.num_workers,
+    )
+
+    base_path = os.path.join(_CODES_DIR, 'datasets')
+
+    # ── 运行 K-fold ──────────────────────────────────────────────────────────────
+    fold_results = []
+    for fold_idx, (train_indices, val_indices) in enumerate(folds):
+        logger.info(f"\n── Fold {fold_idx + 1}/{config.num_folds} "
+                    f"(train={len(train_indices)}, val={len(val_indices)}) ──")
+
+        train_patients = [patients[i] for i in train_indices]
+        val_patients   = [patients[i] for i in val_indices]
+
+        clf = GNNClassifier(config=clf_cfg)
+        checkpoint_path = os.path.join(exp_dir, f'fold_{fold_idx + 1}_best_model.pt')
+        result = clf.train_one_fold(
+            train_patients, val_patients, base_path, fold_idx=fold_idx + 1,
+            checkpoint_path=checkpoint_path,
+            reuse_checkpoint=config.reuse_checkpoints,
+        )
+        predictions = result.pop('predictions', {})
+        if predictions:
+            for task in selected_tasks:
+                task_pred = predictions.get(task, {})
+                patient_result = save_fold_patient_outputs(
+                    exp_dir, task, '', fold_idx + 1,
+                    predictions.get('patient_ids', []),
+                    task_pred.get('labels', []),
+                    probs=task_pred.get('probs'),
+                    logits=task_pred.get('logits'),
+                )
+                result[f'{task}_patient_acc'] = patient_result['patient_acc']
+                result[f'{task}_patient_logits_json'] = patient_result['patient_logits_json']
+                result[f'{task}_patient_logits_csv'] = patient_result['patient_logits_csv']
+            keep_prefixes = tuple(f'{task}_' for task in selected_tasks)
+            result = {k: v for k, v in result.items() if k == 'fold' or k.startswith(keep_prefixes)}
+        fold_results.append(result)
+
+        # 保存单 fold 结果
+        fold_path = os.path.join(exp_dir, f'fold_{fold_idx + 1}_result.json')
+        with open(fold_path, 'w', encoding='utf-8') as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+
+    # ── 汇总 ─────────────────────────────────────────────────────────────────────
+    summary = _summarize(fold_results, config, tasks=selected_tasks)
+    summary_path = os.path.join(exp_dir, 'summary.json')
+    with open(summary_path, 'w', encoding='utf-8') as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+
+    logger.info(f"\n=== {config.name} 完成 ===")
+    _log_summary(summary, logger)
+
+    return summary
 
 
-# ==================== 命令行入口 ====================
+# ─── 命令行入口 ───────────────────────────────────────────────────────────────
 
-if __name__ == '__main__':
+
+def build_paper_config(exp, device="cpu", num_workers=0):
+    """Translate a selected paper recipe without changing its hyperparameters."""
     cfg = GNNExperimentConfig()
-    run_single_experiment(cfg)
+    cfg.gnn_type = exp.get('gnn_type', cfg.gnn_type)
+    cfg.hidden_dim = exp.get('hidden_dim', cfg.hidden_dim)
+    cfg.num_layers = exp.get('num_layers', cfg.num_layers)
+    cfg.num_heads = exp.get('num_heads', cfg.num_heads)
+    cfg.shared_encoder = exp.get('shared_encoder', cfg.shared_encoder)
+    cfg.lr = exp.get('lr', cfg.lr)
+    cfg.weight_decay = exp.get('weight_decay', cfg.weight_decay)
+    cfg.optimizer = exp.get('optimizer', cfg.optimizer)
+    cfg.lr_scheduler = exp.get('lr_scheduler', cfg.lr_scheduler)
+    cfg.warmup_epochs = exp.get('warmup_epochs', cfg.warmup_epochs)
+    cfg.epochs = exp.get('epochs', cfg.epochs)
+    cfg.patience = exp.get('patience', cfg.patience)
+    cfg.batch_size = exp.get('batch_size', cfg.batch_size)
+    cfg.dropout = exp.get('dropout', cfg.dropout)
+    cfg.classifier_dropout = exp.get('classifier_dropout', cfg.classifier_dropout)
+    cfg.pd_loss_weight = exp.get('pd_loss_weight', cfg.pd_loss_weight)
+    cfg.stage_loss_weight = exp.get('stage_loss_weight', cfg.stage_loss_weight)
+    cfg.subtype_loss_weight = exp.get('subtype_loss_weight', cfg.subtype_loss_weight)
+    cfg.label_smoothing = exp.get('label_smoothing', cfg.label_smoothing)
+    cfg.dataset_group = exp.get('dataset_group', cfg.dataset_group)
+    cfg.num_folds = exp.get('num_folds', cfg.num_folds)
+    cfg.kfold_mode = exp.get('kfold_mode', cfg.kfold_mode)
+    cfg.primary_task = exp.get('primary_task', cfg.primary_task)
+    cfg.seed = exp.get('seed', cfg.seed)
+    cfg.name = exp['_group']
+    cfg.num_workers = num_workers
+    return cfg
+
+
+def run_paper_experiment(exp, output_dir, device="cpu", num_workers=0):
+    exp = resolve_baseline_tasks(exp)
+    cfg = build_paper_config(exp, device, num_workers)
+    if exp.get('_subtype_td_rest'):
+        return run_gnn_subtype_td_rest_experiment(cfg, output_dir=output_dir, seed=cfg.seed,
+            n_splits=exp.get('num_folds', 5), repeats=exp.get('kfold_repeats', 3))
+    return run_single_experiment(cfg, tasks=exp['_run_tasks'], output_dir=output_dir)
+
+# ==================== SUBTYPE workflow ====================
+
+
+
+_subtype_THIS_FILE = Path(__file__).resolve()
+CODES_ROOT = _subtype_THIS_FILE.parents[2]
+if str(CODES_ROOT) not in sys.path:
+    sys.path.insert(0, str(CODES_ROOT))
+
+
+
+def _subtype_subtype_binary_label(subtype: str, task: str) -> int:
+    y3 = SUBTYPE_TO_3CLS[subtype]
+    if task == 'pd_subtype_tdrest':
+        return subtype_tdrest_label(y3)
+    label = subtype_pigd_mixed_label(y3)
+    return -1 if label is None else label
+
+
+def _subtype_build_dataset_with_patient_ids(
+    patients: List[Dict],
+    base_path: str,
+    cache_dir: str,
+    task: str | None = None,
+) -> Tuple[NerveGraphDataset, List[str]]:
+    """构建 NerveGraphDataset，并生成与 samples 顺序严格对齐的 patient_id 列表。"""
+    ds = NerveGraphDataset(patients, base_path, cache_dir=cache_dir)
+
+    sample_pids: List[str] = []
+    for patient in patients:
+        central = patient['image_paths'].get('central', [])
+        whorl = patient['image_paths'].get('whorl', [])
+        for c_rel, w_rel in zip(central, whorl):
+            c_path = os.path.join(base_path, c_rel)
+            w_path = os.path.join(base_path, w_rel)
+            if os.path.exists(c_path) and os.path.exists(w_path):
+                sample_pids.append(patient['patient_id'])
+
+    if len(sample_pids) != len(ds.samples):
+        raise RuntimeError(
+            f"sample/patient_id alignment mismatch: {len(ds.samples)} samples vs "
+            f"{len(sample_pids)} ids"
+        )
+
+    if task is not None:
+        subtype_by_pid = {p['patient_id']: p['subtype'] for p in patients}
+        relabeled = []
+        for sample, pid in zip(ds.samples, sample_pids):
+            c_path, w_path, pd_l, stage_l, _sub_l = sample
+            relabeled.append((
+                c_path,
+                w_path,
+                pd_l,
+                stage_l,
+                _subtype_subtype_binary_label(subtype_by_pid[pid], task),
+            ))
+        ds.samples = relabeled
+
+    return ds, sample_pids
+
+
+def _subtype_build_model(config: GNNExperimentConfig, device: torch.device) -> GNNMultiTaskModel:
+    model = GNNMultiTaskModel(
+        hidden_dim=config.hidden_dim,
+        num_layers=config.num_layers,
+        gnn_type=config.gnn_type,
+        num_heads=config.num_heads,
+        dropout=config.dropout,
+        classifier_dropout=config.classifier_dropout,
+        shared_encoder=config.shared_encoder,
+        num_subtype_classes=2,
+    )
+    return model.to(device)
+
+
+def _subtype_build_optimizer(config: GNNExperimentConfig, model: torch.nn.Module):
+    if config.optimizer == 'adamw':
+        return torch.optim.AdamW(model.parameters(), lr=config.lr,
+                                 weight_decay=config.weight_decay)
+    return torch.optim.Adam(model.parameters(), lr=config.lr,
+                            weight_decay=config.weight_decay)
+
+
+def _subtype_build_scheduler(config: GNNExperimentConfig, optimizer):
+    if config.lr_scheduler == 'cosine':
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(config.epochs - config.warmup_epochs, 1)
+        )
+    if config.lr_scheduler == 'step':
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=max(config.epochs // 3, 1), gamma=0.5
+        )
+    return None
+
+
+def _subtype_train_one_subtask(
+    config: GNNExperimentConfig,
+    train_patients: List[Dict],
+    val_patients: List[Dict],
+    base_path: str,
+    cache_dir: str,
+    device: torch.device,
+    task: str,
+) -> GNNMultiTaskModel:
+    train_ds, _ = _subtype_build_dataset_with_patient_ids(train_patients, base_path, cache_dir, task)
+    val_ds, _ = _subtype_build_dataset_with_patient_ids(val_patients, base_path, cache_dir, task)
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=config.batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=config.num_workers,
+        drop_last=(len(train_ds) > config.batch_size),
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=config.batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=config.num_workers,
+    )
+
+    model = _subtype_build_model(config, device)
+    optimizer = _subtype_build_optimizer(config, model)
+    scheduler = _subtype_build_scheduler(config, optimizer)
+
+    best_acc = -1.0
+    best_state = None
+    patience_counter = 0
+
+    for epoch in range(1, config.epochs + 1):
+        if 0 < config.warmup_epochs and epoch <= config.warmup_epochs:
+            for group in optimizer.param_groups:
+                group['lr'] = config.lr * epoch / config.warmup_epochs
+
+        model.train()
+        total_loss, total_items = 0.0, 0
+        for batch in train_loader:
+            central_b, whorl_b, _pd_ls, _stage_ls, sub_ls = batch[:5]
+            central_b = batch_to_device(central_b, device)
+            whorl_b = batch_to_device(whorl_b, device)
+            sub_ls = sub_ls.to(device)
+            mask = sub_ls >= 0
+            if not mask.any():
+                continue
+
+            optimizer.zero_grad(set_to_none=True)
+            _pd_out, _stage_out, sub_out = model(central_b, whorl_b)
+            loss = F.cross_entropy(
+                sub_out[mask],
+                sub_ls[mask],
+                label_smoothing=config.label_smoothing,
+            ) * config.subtype_loss_weight
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            optimizer.step()
+            total_loss += float(loss.item()) * int(mask.sum().item())
+            total_items += int(mask.sum().item())
+
+        if scheduler is not None and epoch > config.warmup_epochs:
+            scheduler.step()
+
+        val_acc = _subtype_eval_binary_acc(model, val_loader, device)
+        improved = val_acc > best_acc
+        if improved:
+            best_acc = val_acc
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            patience_counter = 0
+        else:
+            patience_counter += 1
+
+        train_loss = total_loss / max(1, total_items)
+        if epoch == 1 or epoch == config.epochs or epoch % 10 == 0:
+            print(
+                f"    [{task}] E{epoch:03d}/{config.epochs} "
+                f"train_loss={train_loss:.4f} val_bin_acc={val_acc:.4f}"
+                f"{' *' if improved else ''}",
+                flush=True,
+            )
+        if patience_counter >= config.patience:
+            print(f"    [{task}] early stop at epoch {epoch}", flush=True)
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return model
+
+
+@torch.no_grad()
+def _subtype_eval_binary_acc(model: GNNMultiTaskModel, loader: DataLoader,
+                     device: torch.device) -> float:
+    model.eval()
+    correct, total = 0, 0
+    for batch in loader:
+        central_b, whorl_b, _pd_ls, _stage_ls, sub_ls = batch[:5]
+        central_b = batch_to_device(central_b, device)
+        whorl_b = batch_to_device(whorl_b, device)
+        sub_ls = sub_ls.to(device)
+        mask = sub_ls >= 0
+        if not mask.any():
+            continue
+        _pd_out, _stage_out, sub_out = model(central_b, whorl_b)
+        pred = sub_out.argmax(dim=1)
+        correct += int((pred[mask] == sub_ls[mask]).sum().item())
+        total += int(mask.sum().item())
+    return correct / total if total else 0.0
+
+
+@torch.no_grad()
+def _subtype_infer_patient_level(
+    model: GNNMultiTaskModel,
+    patients: List[Dict],
+    config: GNNExperimentConfig,
+    base_path: str,
+    cache_dir: str,
+    device: torch.device,
+) -> Tuple[Dict[str, int], Dict[str, float]]:
+    ds, sample_pids = _subtype_build_dataset_with_patient_ids(patients, base_path, cache_dir)
+    loader = DataLoader(
+        ds,
+        batch_size=config.batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=config.num_workers,
+    )
+
+    model.eval()
+    sums: Dict[str, np.ndarray] = defaultdict(lambda: np.zeros(2, dtype=np.float64))
+    counts: Dict[str, int] = defaultdict(int)
+    offset = 0
+    for batch in loader:
+        central_b, whorl_b, _pd_ls, _stage_ls, sub_ls = batch[:5]
+        batch_size = int(sub_ls.size(0))
+        central_b = batch_to_device(central_b, device)
+        whorl_b = batch_to_device(whorl_b, device)
+        _pd_out, _stage_out, sub_out = model(central_b, whorl_b)
+        probs = torch.softmax(sub_out, dim=1).cpu().numpy()
+        for i, pid in enumerate(sample_pids[offset:offset + batch_size]):
+            sums[pid] += probs[i]
+            counts[pid] += 1
+        offset += batch_size
+
+    pred_by_pid: Dict[str, int] = {}
+    prob_class1_by_pid: Dict[str, float] = {}
+    for pid, total_prob in sums.items():
+        mean_prob = total_prob / max(1, counts[pid])
+        pred_by_pid[pid] = int(np.argmax(mean_prob))
+        prob_class1_by_pid[pid] = float(mean_prob[1])
+    return pred_by_pid, prob_class1_by_pid
+
+
+def run_gnn_subtype_td_rest_experiment(
+    config: GNNExperimentConfig,
+    output_dir: str,
+    seed: int = 42,
+    n_splits: int = 5,
+    repeats: int = 3,
+) -> Dict:
+    """运行 GNN subtype TD-rest 二分类 5-fold x 3 重算实验。"""
+    os.makedirs(output_dir, exist_ok=True)
+    set_seed(seed)
+
+    cfg = deepcopy(config)
+    cfg.primary_task = 'subtype'
+    cfg.pd_loss_weight = 0.0
+    cfg.stage_loss_weight = 0.0
+    if cfg.subtype_loss_weight <= 0:
+        cfg.subtype_loss_weight = 1.0
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    base_path = str(CODES_ROOT / 'datasets')
+    cache_dir = cfg.graph_cache_dir or str(CODES_ROOT / 'results' / 'graph_cache')
+    json_path = str(CODES_ROOT / cfg.dataset_json)
+
+    with open(json_path, 'r', encoding='utf-8') as f:
+        all_patients = json.load(f)
+    subtype_patients = [
+        p for p in all_patients
+        if p.get('group') == 'pd' and p.get('subtype') in SUBTYPE_TO_3CLS
+    ]
+    pid_to_patient = {p['patient_id']: p for p in subtype_patients}
+    records = [{'patient_id': p['patient_id'], 'subtype': p['subtype']}
+               for p in subtype_patients]
+    folds = build_patient_5x3_subtype_folds(
+        records, seed=seed, n_splits=n_splits, repeats=repeats
+    )
+
+    print('=' * 60)
+    print('GNN Subtype TD-rest 二分类公平重算 (5-fold x 3, 仅 subtype 任务)')
+    print(f"subtype 患者数: {len(subtype_patients)} | gnn={cfg.gnn_type} | "
+          f"hidden={cfg.hidden_dim} | folds={len(folds)} | device={device}")
+    print('=' * 60)
+
+    fold_results: List[Dict] = []
+    pred_rows: List[Dict] = []
+
+    for global_idx, fold in enumerate(folds, start=1):
+        repeat, fold_no = fold['repeat'], fold['fold']
+        train_patients = [pid_to_patient[pid] for pid in fold['train_patients_full']]
+        val_patients = [pid_to_patient[pid] for pid in fold['val_patients_full']]
+        print(
+            f"\n--- repeat {repeat} fold {fold_no} ({global_idx}/{len(folds)}) | "
+            f"train={len(train_patients)} val={len(val_patients)} ---",
+            flush=True,
+        )
+
+        tdrest_model = _subtype_train_one_subtask(
+            cfg, train_patients, val_patients, base_path, cache_dir, device,
+            'pd_subtype_tdrest'
+        )
+        tdrest_pred, tdrest_prob = _subtype_infer_patient_level(
+            tdrest_model, val_patients, cfg, base_path, cache_dir, device
+        )
+        del tdrest_model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        rows = td_rest_rows(pid_to_patient, fold['val_patients_full'],
+                            tdrest_pred, tdrest_prob, repeat, fold_no)
+        fold_results.append(td_rest_fold(rows))
+        pred_rows.extend(rows)
+
+    return save_td_rest_results(output_dir, fold_results, pred_rows,
+                                n_splits, repeats, seed)

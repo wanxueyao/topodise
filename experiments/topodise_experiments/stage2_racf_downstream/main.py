@@ -3,11 +3,19 @@
 PD has three sub-tasks (pd_binary / pd_stage / pd_subtype).
 DM has two sub-tasks (dm_binary: control vs DM; dm_subtype: NDR vs NPDR).
 """
+
+if __name__ == '__main__':
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from experiments._execution import single_main
+    single_main('experiments.topodise_experiments.stage2_racf_downstream.main')
+    raise SystemExit(0)
+
 import os
 import sys
 import json
 import time
-import argparse
 import random
 import copy
 import shutil
@@ -46,7 +54,7 @@ from topodise.data import (
 from topodise.data.downstream_dataset import _load_gray, _GRAY_IMAGE_CACHE
 from topodise.data.dm_dataset import DMDownstreamDataset, DM_TASKS
 from core.data_loader import stratified_kfold
-from .config import Stage2Config
+from experiments._stage_configs import Stage2Config
 
 
 def _cap_cpu_threads():
@@ -229,9 +237,6 @@ def _patient_agg_metrics(patient_ids, logits_list, labels_list, mode="mean_logit
     }
 
 
-def _patient_agg_acc(patient_ids, logits_list, labels_list, mode="mean_logit"):
-    """Aggregate per-image predictions to per-patient and return accuracy."""
-    return _patient_agg_metrics(patient_ids, logits_list, labels_list, mode=mode)["acc"]
 
 
 def _stage2_resume_key(cfg: Stage2Config) -> str:
@@ -2788,48 +2793,7 @@ def run_multitask_experiment(cfg: Stage2Config) -> dict:
     }
 
 
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--parent-ckpt", required=False)
-    p.add_argument("--task", choices=list(NUM_CLASSES.keys()), default=None)
-    p.add_argument("--pd-json", default=None)
-    p.add_argument("--base-path", default=None)
-    p.add_argument("--epochs", type=int, default=None)
-    p.add_argument("--batch-size", type=int, default=None)
-    p.add_argument("--image-size", type=int, default=None)
-    p.add_argument("--few-shot-k", type=int, default=None)
-    p.add_argument("--scheduler", choices=["none", "cosine", "plateau"], default=None)
-    p.add_argument("--min-lr", type=float, default=None)
-    p.add_argument("--warmup-epochs", type=int, default=None)
-    p.add_argument("--early-stopping", type=int, choices=[0, 1], default=None)
-    p.add_argument("--patience", type=int, default=None)
-    p.add_argument("--min-delta", type=float, default=None)
-    p.add_argument("--classifier-dropout", type=float, default=None)
-    p.add_argument("--run-name", default=None)
-    p.add_argument("--output-dir", default=None)
-    p.add_argument("--device", default=None)
-    p.add_argument("--smoke", action="store_true")
-    return p.parse_args()
-
-
-if __name__ == "__main__":
-    args = parse_args()
-    cfg = Stage2Config()
-    if args.smoke:
-        cfg.epochs = 2
-        cfg.batch_size = 2
-        cfg.image_size = 64
-        cfg.num_workers = 0
-        cfg.val_split = 0.3
-        cfg.adapter_rank = 8
-        cfg.run_name = "smoke_stage2"
-    for k in ("parent_ckpt", "task", "pd_json", "base_path", "epochs", "batch_size",
-              "image_size", "few_shot_k", "scheduler", "min_lr", "warmup_epochs",
-              "patience", "min_delta", "classifier_dropout", "run_name", "output_dir", "device"):
-        v = getattr(args, k)
-        if v is not None:
-            setattr(cfg, k, v)
-    if args.early_stopping is not None:
-        cfg.early_stopping = bool(args.early_stopping)
-    out = run_single_experiment(cfg)
-    print(json.dumps(out, indent=2))
+def run_paper_experiment(exp, output_dir, device='cpu', num_workers=4):
+    """Stage2 task/ensemble implementation using the explicitly supplied Stage1 checkpoint."""
+    from experiments.topodise_experiments.main import run_paper_experiment as run_pipeline
+    return run_pipeline(exp, output_dir, device, num_workers)

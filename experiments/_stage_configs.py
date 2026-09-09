@@ -1,6 +1,146 @@
-"""Stage 2 (RACF) config dataclass."""
+"""TopoDiSE stage configurations shared by experiment runners."""
 from dataclasses import dataclass, asdict, field
-from typing import Literal, Tuple
+from typing import Literal, Tuple, Optional
+
+
+@dataclass
+class Stage0Config:
+    # --- 数据
+    corn1_root: str = "datasets/CORN-1"
+    # c8bf6b548656 参考配方（2026-06-10）
+    image_size: int = 224
+    num_workers: int = 4
+    persistent_workers: bool = False
+    prefetch_factor: int = 2
+    # None 保留历史行为：CUDA 上锁页内存，其他设备不锁页。
+    pin_memory: Optional[bool] = None
+    non_blocking_transfers: bool = False
+    expected_samples: Optional[int] = 1516
+
+    # --- 模型维度
+    encoder_base_channels: int = 64
+    encoder_channel_mult: Tuple[int, ...] = (1, 2, 4, 8)
+    encoder_blocks_per_stage: Tuple[int, ...] = (2, 2, 2, 2)
+    z_dim: int = 512
+    unet_model_channels: int = 64
+    unet_channel_mult: Tuple[int, ...] = (1, 2, 2, 4)
+
+    # --- 扩散过程
+    T: int = 1000
+    schedule: str = "cosine"
+
+    # --- 训练
+    epochs: int = 200
+    batch_size: int = 16
+    lr: float = 1e-4
+    weight_decay: float = 1e-2
+    grad_clip: float = 1.0
+    ema_decay: float = 0.9999
+    z_dropout: float = 0.1   # 无分类器引导训练
+
+    # --- 损失权重
+    lambda_simple: float = 1.0
+    lambda_topo: float = 0.1
+
+    # --- 拓扑监督目标（P0 改进；历史默认值为 hgrad）
+    #   'hgrad'  ：单方向水平梯度占位目标（历史实现）
+    #   'sobel'  ：梯度幅值脊线目标
+    #   'frangi' ：多尺度 Frangi 管状度计算代理
+    #   'gt'     ：CORN-1 神经纤维真值分割掩码；按文件名对齐
+    #              labels/<split>_label/ 中的真实标签
+    topo_target: str = "hgrad"
+    frangi_sigmas: Tuple[float, ...] = (1.0, 2.0, 3.0)
+    frangi_beta: float = 0.5
+    frangi_c: float = 0.5
+
+    # --- 视图对比辅助任务（P0；两个分支视图上的 SimCLR NT-Xent）
+    use_view_contrastive: bool = False
+    lambda_contrastive: float = 0.5
+    tau_contrastive: float = 0.2
+
+    # --- 输入输出
+    output_dir: str = "results"
+    run_name: str = "topodise_stage0"
+    resume: bool = True
+    resume_ckpt: str = ""
+    strict_resume: bool = True
+    device: str = "auto"
+    # 仅控制是否在训练初始化时执行 torch.manual_seed(42)。
+    reproducibility: bool = True
+    amp: bool = False
+    channels_last: bool = False
+    fused_adamw: bool = False
+
+    # 烟雾测试开关，由主入口控制
+    smoke: bool = False
+
+    def asdict(self):
+        return asdict(self)
+
+
+@dataclass
+class Stage1Config:
+    # --- 模型维度继承自父检查点；检查点内含超参
+    parent_ckpt: str = ""              # Stage0 ema_best.pt 的路径
+    # --- 数据
+    pd_json: str = "datasets/pd_dataset_en/patients_dataset_en.json"
+    region_pair_manifest: Optional[str] = None
+    base_path: str = "datasets"
+    patient_groups: Tuple[str, ...] = ("control", "control_cataract")
+    allow_dm_disease: bool = False
+    # c8bf6b548656 参考配方（2026-06-10）
+    image_size: int = 224
+    num_workers: int = 4
+    persistent_workers: bool = False
+    prefetch_factor: int = 2
+    pin_memory: Optional[bool] = None
+    non_blocking_transfers: bool = False
+    expected_region_pairs: Optional[int] = 182
+
+    # --- 训练
+    epochs: int = 80
+    batch_size: int = 16
+    lr: float = 2e-5
+    weight_decay: float = 1e-2
+    grad_clip: float = 1.0
+    ema_decay: float = 0.9999
+
+    # --- 损失权重
+    lambda_simple: float = 1.0
+    lambda_topo: float = 0.05
+    lambda_region: float = 0.5
+    tau_region: float = 0.2
+
+    # --- 拓扑监督目标（P0；与 Stage0 选项一致）
+    topo_target: str = "hgrad"
+    frangi_sigmas: tuple = (1.0, 2.0, 3.0)
+    frangi_beta: float = 0.5
+    frangi_c: float = 0.5
+
+    # --- RSCP 微调时允许冻结权重的去噪器向编码器反传生成信号（P1）。
+    #     关闭时保留历史的仅记录日志行为。
+    train_denoiser: bool = False
+
+    # --- 输入输出
+    output_dir: str = "results"
+    run_name: str = "topodise_stage1_rscp"
+    device: str = "auto"
+    # 仅控制是否在训练初始化时执行 torch.manual_seed(42)。
+    reproducibility: bool = True
+    # 参考 Stage1 从 Stage0 的原始 ``encoder`` 状态初始化。
+    # ``ema`` 仍可用于显式消融，但不属于论文检查点配方。
+    parent_encoder_weights: str = "raw"  # 可选 raw 或 ema
+    amp: bool = False
+    channels_last: bool = False
+    fused_adamw: bool = False
+    resume: bool = True
+    resume_ckpt: str = ""
+    strict_resume: bool = True
+
+    smoke: bool = False
+
+    def asdict(self):
+        return asdict(self)
 
 
 @dataclass

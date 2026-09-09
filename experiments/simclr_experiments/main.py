@@ -1,50 +1,15 @@
-"""
-main.py - SimCLR 增强实验主程序
+"""simclr 实验实现：训练、评估及单组执行；参数与批量控制见 batch_experiments.py。"""
+from __future__ import annotations
 
-模块职责
---------
-执行单组配置下的完整 K-fold 交叉验证实验（SimCLR 自监督预训练 + 有监督微调）:
-1. 加载数据并生成 K-fold 划分
-2. 每个 fold 执行 SimCLR 预训练后再微调
-3. 汇总指标 (Acc, F1, AUC)
-4. 生成可视化 (训练曲线、混淆矩阵、ROC)
-5. 输出实验报告 (Markdown 格式)
+if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from experiments._execution import single_main
+    single_main("experiments.simclr_experiments.main")
+    raise SystemExit(0)
 
-两阶段训练
-----------
-Phase 1 (SimCLR 预训练):
-    - 训练集所有图像生成双视图，NT-Xent 对比损失
-    - 无需标签，自监督学习视觉表征
-    - backbone: MobileViT-XXS/XS, VanillaNet-5, EfficientNet-B0
-
-Phase 2 (有监督微调):
-    - 使用预训练 backbone 权重初始化分类模型
-    - 微调阶段不使用任何图像增强（SimCLR 已完成表征学习）
-    - 支持 CE / Label Smooth / Ordinal 损失
-
-接口设计
---------
-输入:
-    SimCLRExperimentConfig: 继承自 SimCLRClassifierConfig，添加实验管理字段
-
-输出:
-    - results/<simclr_backbone_arch_timestamp>/
-        - config.txt: 配置记录
-        - output.txt: 训练日志
-        - experiment_report.md: 实验报告
-        - *.png: 可视化图表
-        - best_model_*.pth: 最佳微调模型权重
-
-批量调用示例
-------------
-    >>> from main import run_single_experiment, SimCLRExperimentConfig
-    >>>
-    >>> cfg = SimCLRExperimentConfig()
-    >>> cfg.BACKBONE = 'mobilevit_xxs'
-    >>> cfg.SIMCLR_EPOCHS = 100
-    >>> cfg.NUM_EPOCHS = 60
-    >>> result = run_single_experiment(cfg)
-"""
+from utils.td_rest import resolve_baseline_tasks, td_rest_rows, td_rest_fold, save_td_rest_results
 import sys
 import os
 import time
@@ -54,15 +19,19 @@ import numpy as np
 from datetime import datetime
 from collections import defaultdict
 from typing import Literal, List, Dict, Any, Optional
+from core.simclr_classifier import SimCLRClassifier, SimCLRClassifierConfig, TASK_CONFIG
+from core.data_loader import PDDataset, load_and_filter_dataset, stratified_kfold
+from utils.patient_outputs import save_fold_patient_outputs, task_labels_for_indices
+from utils.misc import set_seed, Tee, save_config
+from utils.visualize import plot_confusion_matrix, plot_roc_auc, plot_training_curves
+import hashlib
+from torch.utils.data import Subset
+from core.simclr_trainer import SimCLRModel, simclr_pretrain
+
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from core.simclr_classifier import SimCLRClassifier, SimCLRClassifierConfig, TASK_CONFIG
-from core.data_loader import PDDataset, load_and_filter_dataset, stratified_kfold
-from utils.patient_outputs import save_fold_patient_outputs, task_labels_for_indices
-from utils.misc import set_seed, Tee, create_output_dir, save_config
-from utils.visualize import plot_confusion_matrix, plot_roc_auc, plot_training_curves
 
 
 # ==================== 实验配置 ====================
@@ -98,7 +67,7 @@ class SimCLRExperimentConfig(SimCLRClassifierConfig):
     """
     # 继承 SimCLRClassifierConfig 的所有默认值
     ARCHITECTURE: Literal['single_stream', 'mixed_single_stream', 'dual_stream'] = 'single_stream'
-    BACKBONE: Literal['mobilevit_xxs', 'mobilevit_xs', 'vanillanet_5', 'efficientnet_b0', 'densenet121', 'resnet18'] = 'densenet121'
+    BACKBONE: Literal['resnet18'] = 'resnet18'
     PRETRAINED: Literal[True, False, 'Half'] = True
     DROPOUT: float = 0.4
 
@@ -135,7 +104,6 @@ class SimCLRExperimentConfig(SimCLRClassifierConfig):
     EARLY_STOPPING: bool = True
     PATIENCE: int = 15
 
-    VANILLANET_INIT_ACT_NUM: int = 3
 
     NUM_FOLDS: int = 5
     KFOLD_REPEATS: int = 1
@@ -261,8 +229,8 @@ class SimCLRExperimentRunner:
                         continue
 
                     print(f"样本数: {len(dataset)}")
-                    if task == 'pd_subtype_hierarchy':
-                        region_result = self._run_subtype_hierarchy(dataset, f"_{region}")
+                    if task == 'pd_subtype_tdrest':
+                        region_result = self._run_subtype_td_rest(dataset, f"_{region}")
                     else:
                         region_result = self._run_kfold(dataset, task, f"_{region}")
                     results[task]['regions'][region] = region_result
@@ -283,8 +251,8 @@ class SimCLRExperimentRunner:
                 print(f"\n{'='*60}")
                 print(f"任务: {TASK_CONFIG[task]['name']}")
                 print('='*60)
-                if task == 'pd_subtype_hierarchy':
-                    results[task] = self._run_subtype_hierarchy(dataset)
+                if task == 'pd_subtype_tdrest':
+                    results[task] = self._run_subtype_td_rest(dataset)
                 else:
                     results[task] = self._run_kfold(dataset, task)
 
@@ -373,12 +341,12 @@ class SimCLRExperimentRunner:
 
         return summary
 
-    def _run_subtype_hierarchy(self, dataset, suffix: str = "") -> Dict[str, Any]:
-        """执行 SimCLR subtype hierarchy：共享预训练 backbone，两个二分类 head 层级融合。"""
+    def _run_subtype_td_rest(self, dataset, suffix: str = "") -> Dict[str, Any]:
+        """执行 SimCLR subtype hierarchy：共享预训练 backbone，TD-vs-rest 二分类 head。"""
         config = self.config
         full_indices = [i for i, y in enumerate(dataset.subtype_labels) if int(y) >= 0]
         if not full_indices:
-            print("⚠ 无 subtype 标签样本，跳过 pd_subtype_hierarchy")
+            print("⚠ 无 subtype 标签样本，跳过 pd_subtype_tdrest")
             return {}
 
         full_pd = [1 for _ in full_indices]
@@ -390,7 +358,7 @@ class SimCLRExperimentRunner:
         prediction_rows: List[Dict[str, Any]] = []
         total_folds = config.NUM_FOLDS * config.KFOLD_REPEATS
         print(
-            f"层级 subtype 协议: patient {config.NUM_FOLDS}-fold x "
+            f"TD-rest subtype 协议: patient {config.NUM_FOLDS}-fold x "
             f"{config.KFOLD_REPEATS} repeats，共 {total_folds} folds"
         )
 
@@ -407,146 +375,41 @@ class SimCLRExperimentRunner:
 
                 for fold_idx, (train_local_idx, val_local_idx) in enumerate(splits, start=1):
                     global_fold = repeat * config.NUM_FOLDS + fold_idx
-                    print(f"\n--- Hierarchy Repeat {repeat} Fold {fold_idx}/{config.NUM_FOLDS} ---")
+                    print(f"\n--- TD-rest Repeat {repeat} Fold {fold_idx}/{config.NUM_FOLDS} ---")
                     train_idx = [full_indices[int(i)] for i in train_local_idx]
                     val_idx = [full_indices[int(i)] for i in val_local_idx]
-                    train_pm_idx = [i for i in train_idx if int(dataset.subtype_labels[i]) in (1, 2)]
-                    val_pm_idx = [i for i in val_idx if int(dataset.subtype_labels[i]) in (1, 2)]
 
                     td_train = torch.utils.data.Subset(dataset, train_idx)
                     full_val = torch.utils.data.Subset(dataset, val_idx)
-                    pm_train = torch.utils.data.Subset(dataset, train_pm_idx)
-                    pm_val = torch.utils.data.Subset(dataset, val_pm_idx)
 
                     self.classifier.precomputed_simclr = original_precomputed
                     shared_simclr = self.classifier.pretrain_backbone(td_train, fold_idx=global_fold)
                     self.classifier.precomputed_simclr = shared_simclr
                     td_result = self.classifier.train(
                         td_train, full_val, 'pd_subtype_tdrest',
-                        fold_idx=global_fold, suffix=f'{suffix}_hier_tdrest',
-                    )
-                    pm_result = self.classifier.train(
-                        pm_train, pm_val, 'pd_subtype_pigd_mixed',
-                        fold_idx=global_fold, suffix=f'{suffix}_hier_pigd_mixed',
+                        fold_idx=global_fold, suffix=f'{suffix}_td_rest',
                     )
 
                     td_pred = self.classifier.predict_dataset(
                         td_result['model'], full_val, 'pd_subtype_tdrest'
                     )
-                    pm_pred = self.classifier.predict_dataset(
-                        pm_result['model'], full_val, 'pd_subtype_pigd_mixed'
-                    )
 
-                    fold_metrics, fold_rows = self._compute_subtype_hierarchy_fold(
-                        dataset, val_idx, td_pred, pm_pred, repeat, fold_idx
-                    )
-                    fold_results.append(fold_metrics)
-                    prediction_rows.extend(fold_rows)
-                    print(
-                        f"  HierAcc: {fold_metrics['subtype_hierarchy_acc']:.4f}, "
-                        f"BalAcc: {fold_metrics['subtype_hierarchy_balanced_acc']:.4f}, "
-                        f"TDRest: {fold_metrics['tdrest_acc']:.4f}, "
-                        f"PIGD/Mixed: {fold_metrics['pigd_mixed_acc']:.4f}"
-                    )
+                    pids = [int(dataset.patient_ids[i]) for i in val_idx]
+                    by_pid = self._aggregate_patient_predictions(pids, td_pred, positive_class=1)
+                    patient_map = {int(dataset.patient_ids[i]): {'subtype': ('TD', 'PIGD', 'mixed')[int(dataset.subtype_labels[i])]} for i in val_idx}
+                    rows = td_rest_rows(patient_map, sorted(set(pids)),
+                                        {pid: v['pred'] for pid, v in by_pid.items()},
+                                        {pid: v['prob_positive'] for pid, v in by_pid.items()}, repeat, fold_idx)
+                    fold_results.append(td_rest_fold(rows))
+                    prediction_rows.extend(rows)
+
         finally:
             self.classifier.precomputed_simclr = original_precomputed
 
-        summary = self._summarize_subtype_hierarchy(fold_results)
-        suffix_name = suffix.strip('_')
-        file_prefix = 'pd_subtype_hierarchy' + (f'_{suffix_name}' if suffix_name else '')
-        pred_path = os.path.join(self.output_dir, f'{file_prefix}_predictions.csv')
-        json_path = os.path.join(self.output_dir, f'{file_prefix}_summary.json')
-        self._write_hierarchy_predictions_csv(pred_path, prediction_rows)
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(summary, f, indent=2, ensure_ascii=False)
-        print(f"✓ 保存 hierarchy 预测: {pred_path}")
-        print(f"✓ 保存 hierarchy 汇总: {json_path}")
+        return save_td_rest_results(self.output_dir, fold_results, prediction_rows,
+                                    config.NUM_FOLDS, config.KFOLD_REPEATS, config.SEED,
+                                    prefix='pd_subtype' + suffix)
 
-        return {
-            'fold_results': fold_results,
-            'final_results': {
-                'avg_acc': summary['subtype_hierarchy_acc_mean'],
-                'std_acc': summary['subtype_hierarchy_acc_std'],
-                'avg_f1': summary['subtype_hierarchy_balanced_acc_mean'],
-                'std_f1': summary['subtype_hierarchy_balanced_acc_std'],
-                'tdrest_acc_mean': summary['tdrest_acc_mean'],
-                'tdrest_acc_std': summary['tdrest_acc_std'],
-                'pigd_mixed_acc_mean': summary['pigd_mixed_acc_mean'],
-                'pigd_mixed_acc_std': summary['pigd_mixed_acc_std'],
-                'auc_scores': {},
-            },
-            'hierarchy_summary': summary,
-            'prediction_csv': pred_path,
-        }
-
-    def _compute_subtype_hierarchy_fold(
-        self,
-        dataset,
-        val_idx: List[int],
-        td_pred: Dict[str, Any],
-        pm_pred: Dict[str, Any],
-        repeat: int,
-        fold: int,
-    ) -> tuple:
-        pids = [int(dataset.patient_ids[i]) for i in val_idx]
-        true_subtypes = [int(dataset.subtype_labels[i]) for i in val_idx]
-        td_by_pid = self._aggregate_patient_predictions(pids, td_pred, positive_class=1)
-        pm_by_pid = self._aggregate_patient_predictions(pids, pm_pred, positive_class=1)
-
-        rows: List[Dict[str, Any]] = []
-        true_3cls, pred_3cls = [], []
-        td_true, td_hat = [], []
-        pm_true, pm_hat = [], []
-
-        for pid in sorted(set(pids)):
-            idx = pids.index(pid)
-            y = int(true_subtypes[idx])
-            gate = int(td_by_pid[pid]['pred'])
-            pm = int(pm_by_pid[pid]['pred'])
-            final_pred = 0 if gate == 0 else (1 if pm == 0 else 2)
-
-            true_3cls.append(y)
-            pred_3cls.append(final_pred)
-            td_true.append(0 if y == 0 else 1)
-            td_hat.append(gate)
-            if y in (1, 2):
-                pm_true.append(0 if y == 1 else 1)
-                pm_hat.append(pm)
-
-            rows.append({
-                'repeat': repeat,
-                'fold': fold,
-                'patient_id': pid,
-                'true_subtype': y,
-                'tdrest_pred': gate,
-                'tdrest_prob_rest': td_by_pid[pid]['prob_positive'],
-                'pigd_mixed_pred': pm,
-                'pigd_mixed_prob_mixed': pm_by_pid[pid]['prob_positive'],
-                'final_pred': final_pred,
-            })
-
-        per_class_3 = self._per_class_recall(true_3cls, pred_3cls, [0, 1, 2])
-        td_per_class = self._per_class_recall(td_true, td_hat, [0, 1])
-        pm_per_class = self._per_class_recall(pm_true, pm_hat, [0, 1])
-        cm_3 = self._confusion_matrix(true_3cls, pred_3cls, [0, 1, 2])
-
-        metrics = {
-            'repeat': repeat,
-            'fold': fold,
-            'n_val_full': len(set(pids)),
-            'n_val_td': sum(1 for y in true_3cls if y == 0),
-            'n_val_rest': sum(1 for y in true_3cls if y in (1, 2)),
-            'n_val_pigd_mixed': len(pm_true),
-            'tdrest_acc': float(np.mean(np.array(td_true) == np.array(td_hat))) if td_true else 0.0,
-            'tdrest_per_class_acc': td_per_class,
-            'pigd_mixed_acc': float(np.mean(np.array(pm_true) == np.array(pm_hat))) if pm_true else 0.0,
-            'pigd_mixed_per_class_acc': pm_per_class,
-            'subtype_hierarchy_acc': float(np.mean(np.array(true_3cls) == np.array(pred_3cls))) if true_3cls else 0.0,
-            'subtype_hierarchy_balanced_acc': float(np.mean(list(per_class_3.values()))) if per_class_3 else 0.0,
-            'subtype_hierarchy_per_class_acc': per_class_3,
-            'confusion_matrix_3cls': cm_3,
-        }
-        return metrics, rows
 
     @staticmethod
     def _aggregate_patient_predictions(pids: List[int], pred: Dict[str, Any], positive_class: int) -> Dict[int, Dict[str, Any]]:
@@ -566,60 +429,9 @@ class SimCLRExperimentRunner:
             }
         return out
 
-    @staticmethod
-    def _per_class_recall(labels: List[int], preds: List[int], classes: List[int]) -> Dict[str, float]:
-        out = {}
-        for cls in classes:
-            total = sum(1 for y in labels if y == cls)
-            correct = sum(1 for y, p in zip(labels, preds) if y == cls and p == cls)
-            out[str(cls)] = float(correct / total) if total else 0.0
-        return out
 
-    @staticmethod
-    def _confusion_matrix(labels: List[int], preds: List[int], classes: List[int]) -> List[List[int]]:
-        pos = {cls: i for i, cls in enumerate(classes)}
-        cm = [[0 for _ in classes] for _ in classes]
-        for y, p in zip(labels, preds):
-            if y in pos and p in pos:
-                cm[pos[y]][pos[p]] += 1
-        return cm
 
-    def _summarize_subtype_hierarchy(self, fold_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        def mean_std(key: str) -> tuple:
-            vals = [float(r[key]) for r in fold_results]
-            return float(np.mean(vals) if vals else 0.0), float(np.std(vals) if vals else 0.0)
 
-        td_mean, td_std = mean_std('tdrest_acc')
-        pm_mean, pm_std = mean_std('pigd_mixed_acc')
-        h_mean, h_std = mean_std('subtype_hierarchy_acc')
-        hb_mean, hb_std = mean_std('subtype_hierarchy_balanced_acc')
-
-        return {
-            'protocol': 'patient_5fold_x3_subtype_hierarchy',
-            'num_folds': self.config.NUM_FOLDS,
-            'kfold_repeats': self.config.KFOLD_REPEATS,
-            'evaluated_folds': len(fold_results),
-            'tdrest_acc_mean': td_mean,
-            'tdrest_acc_std': td_std,
-            'pigd_mixed_acc_mean': pm_mean,
-            'pigd_mixed_acc_std': pm_std,
-            'subtype_hierarchy_acc_mean': h_mean,
-            'subtype_hierarchy_acc_std': h_std,
-            'subtype_hierarchy_balanced_acc_mean': hb_mean,
-            'subtype_hierarchy_balanced_acc_std': hb_std,
-            'fold_results': fold_results,
-        }
-
-    @staticmethod
-    def _write_hierarchy_predictions_csv(path: str, rows: List[Dict[str, Any]]):
-        fields = [
-            'repeat', 'fold', 'patient_id', 'true_subtype', 'tdrest_pred',
-            'tdrest_prob_rest', 'pigd_mixed_pred', 'pigd_mixed_prob_mixed', 'final_pred',
-        ]
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(','.join(fields) + '\n')
-            for row in rows:
-                f.write(','.join(str(row.get(field, '')) for field in fields) + '\n')
 
     def _summarize_results(self, fold_results: List[Dict], all_preds: Dict,
                            task_cfg: Dict, suffix: str) -> Dict[str, Any]:
@@ -743,7 +555,7 @@ class SimCLRExperimentRunner:
             f.write(f"| PD 损失 | `{cfg.PD_LOSS_TYPE}` |\n")
             f.write(f"| Stage 损失 | `{cfg.STAGE_LOSS_TYPE}` |\n")
             f.write(f"| Subtype 损失 | `{cfg.SUBTYPE_LOSS_TYPE}` |\n")
-            f.write(f"| 图像增强 | 无（SimCLR 内部处理） |\n")
+            f.write("| 图像增强 | 无（SimCLR 内部处理） |\n")
             f.write("\n")
 
             f.write("## 结果摘要\n\n")
@@ -906,43 +718,519 @@ def run_single_experiment(
 
 # ==================== 命令行入口 ====================
 
-if __name__ == '__main__':
-    import argparse
 
-    parser = argparse.ArgumentParser(description='SimCLR 增强实验')
-    parser.add_argument('--backbone', default='resnet18',
-                        choices=['resnet18', 'efficientnet_b0', 'densenet121', 'vanillanet_5'])
-    parser.add_argument('--arch', default='dual_stream',
-                        choices=['single_stream', 'mixed_single_stream', 'dual_stream'])
-    parser.add_argument('--simclr-epochs', type=int, default=100)
-    parser.add_argument('--simclr-lr', type=float, default=1e-3)
-    parser.add_argument('--simclr-batch', type=int, default=32)
-    parser.add_argument('--temperature', type=float, default=0.5)
-    parser.add_argument('--ft-epochs', type=int, default=40,
-                        help='微调 epochs 数量')
-    parser.add_argument('--ft-lr', type=float, default=2e-4,
-                        help='微调学习率')
-    parser.add_argument('--dropout', type=float, default=0.4)
-    parser.add_argument('--stage-loss', default='label_smooth',
-                        choices=['ce', 'label_smooth', 'ordinal'])
-    parser.add_argument('--dataset-mode', default='pd_all',
-                        choices=['pd_control', 'pd_control_cataract', 'pd_all'])
-    parser.add_argument('--tasks', nargs='+', default=['pd', 'stage', 'subtype'])
-    parser.add_argument('--output-dir', default=None)
-    args = parser.parse_args()
-
+def build_paper_config(exp, device="cpu", num_workers=0):
+    """Translate a selected paper recipe without changing its hyperparameters."""
     cfg = SimCLRExperimentConfig()
-    cfg.BACKBONE = args.backbone
-    cfg.ARCHITECTURE = args.arch
-    cfg.SIMCLR_EPOCHS = args.simclr_epochs
-    cfg.SIMCLR_LR = args.simclr_lr
-    cfg.SIMCLR_BATCH_SIZE = args.simclr_batch
-    cfg.SIMCLR_TEMPERATURE = args.temperature
-    cfg.NUM_EPOCHS = args.ft_epochs
-    cfg.LEARNING_RATE = args.ft_lr
-    cfg.DROPOUT = args.dropout
-    cfg.STAGE_LOSS_TYPE = args.stage_loss
-    cfg.DATASET_MODE = args.dataset_mode
+    cfg.BACKBONE = exp.get('backbone', 'efficientnet_b0')
+    cfg.ARCHITECTURE = exp.get('architecture', 'single_stream')
+    cfg.PRETRAINED = exp.get('pretrained', True)
+    cfg.DROPOUT = exp.get('dropout', 0.3)
+    cfg.SIMCLR_EPOCHS = exp.get('simclr_epochs', 100)
+    cfg.SIMCLR_LR = exp.get('simclr_lr', 0.001)
+    cfg.SIMCLR_BATCH_SIZE = exp.get('simclr_batch', 32)
+    cfg.SIMCLR_TEMPERATURE = exp.get('temperature', 0.5)
+    cfg.SIMCLR_PROJ_DIM = exp.get('simclr_proj_dim', 128)
+    cfg.SIMCLR_PROJ_HIDDEN_DIM = exp.get('simclr_proj_hidden_dim', 256)
+    cfg.SIMCLR_WEIGHT_DECAY = exp.get('simclr_weight_decay', 0.0001)
+    cfg.SIMCLR_PRETRAIN_DATASET = exp.get('simclr_pretrain_dataset', 'fold')
+    cfg.CORN1_ROOT = exp.get('corn1_root', cfg.CORN1_ROOT)
+    cfg.CORN1_PRETRAIN_SPLITS = exp.get('corn1_pretrain_splits', cfg.CORN1_PRETRAIN_SPLITS)
+    cfg.NUM_EPOCHS = exp.get('ft_epochs', 60)
+    cfg.LEARNING_RATE = exp.get('ft_lr', 0.0005)
+    cfg.WEIGHT_DECAY = exp.get('weight_decay', 0.001)
+    cfg.OPTIMIZER = exp.get('optimizer', 'adamw')
+    cfg.LR_SCHEDULER = exp.get('scheduler', 'warmup_cosine')
+    cfg.PD_LOSS_TYPE = exp.get('pd_loss_type', 'ce')
+    cfg.STAGE_LOSS_TYPE = exp.get('stage_loss', 'label_smooth')
+    cfg.SUBTYPE_LOSS_TYPE = exp.get('subtype_loss_type', 'ce')
+    cfg.LABEL_SMOOTH_EPS = exp.get('label_smooth_eps', 0.1)
+    cfg.KFOLD_MODE = exp.get('kfold_mode', 'patient')
+    cfg.DATASET_MODE = exp.get('dataset_mode', 'pd_all')
+    cfg.EARLY_STOPPING = exp.get('early_stopping', cfg.EARLY_STOPPING)
+    cfg.PATIENCE = exp.get('patience', cfg.PATIENCE)
+    cfg.BACKBONE_LR_RATIO = exp.get('backbone_lr_ratio', 0.1)
+    cfg.NUM_FOLDS = exp.get('num_folds', cfg.NUM_FOLDS)
+    cfg.KFOLD_REPEATS = exp.get('kfold_repeats', cfg.KFOLD_REPEATS)
+    cfg.SEED = exp.get('seed', cfg.SEED)
+    cfg.NUM_WORKERS = num_workers
+    cfg.DEVICE = device
+    return cfg
 
-    result = run_single_experiment(cfg, tasks=args.tasks, output_dir=args.output_dir)
-    print(f"\n完成。输出目录: {result['meta']['output_dir']}")
+
+def run_paper_experiment(exp, output_dir, device="cpu", num_workers=0):
+    exp = resolve_baseline_tasks(exp)
+    cfg = build_paper_config(exp, device, num_workers)
+    if exp.get('_transfer') == 'dm':
+        return run_single_dm_transfer_experiment(cfg, tasks=exp['_run_tasks'], output_dir=output_dir)
+    return run_single_experiment(cfg, tasks=exp['_run_tasks'], output_dir=output_dir)
+
+# ==================== DM workflow ====================
+
+
+
+_dm_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _dm_THIS_DIR not in sys.path:
+    sys.path.insert(0, _dm_THIS_DIR)
+_dm_PROJECT_ROOT = os.path.dirname(os.path.dirname(_dm_THIS_DIR))
+if _dm_PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _dm_PROJECT_ROOT)
+
+
+
+
+# ==================== 路径与任务常量 ====================
+
+DM_JSON = 'datasets/dm_dataset_en/dm_patients_dataset_en.json'
+PD_PRETRAIN_JSON = 'datasets/pd_dataset_en/patients_dataset_en.json'
+PD_PRETRAIN_MODE = 'pd_all'
+CORN1_PRETRAIN_CACHE_TAG = 'corn1'
+
+DM_TASKS: List[str] = ['dm_binary', 'dm_subtype']
+
+# DM 原始 group → DM 二分类标签
+_dm_DM_SUBTYPE_MAP = {'NDR': 0, 'NPDR': 1}
+
+# 所有 DM 任务都映射到二分类 'pd' 头（num_classes=2, label_key='pd'）
+_dm_DM_HEAD_TASK = 'pd'
+
+# pd 自监督预训练使用固定 seed，使所有 DM 实验共享同一份 pd 表征
+PRETRAIN_SEED = 42
+
+# backbone 缓存目录（相对 PROJECT_ROOT）
+PRETRAIN_CACHE_DIR = 'results/simclr_dm_transfer/pretrain_cache'
+
+# 进程内缓存：签名 -> SimCLRModel，避免同一进程多任务重复加载
+_dm_INPROC_PRETRAIN_CACHE: Dict[str, SimCLRModel] = {}
+
+
+def _dm_json_default(o: Any):
+    """让 json.dump 能序列化 numpy 标量/数组（如 int64/float64/ndarray）。"""
+    if isinstance(o, np.integer):
+        return int(o)
+    if isinstance(o, np.floating):
+        return float(o)
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
+
+
+# ==================== 路径解析 ====================
+
+def _dm_resolve_project_path(path: str) -> str:
+    """把相对路径解析为存在的绝对路径，兼容从 ARIS 根或 codes 启动。"""
+    if os.path.isabs(path):
+        return path
+    candidates = [
+        os.path.join(_dm_PROJECT_ROOT, path),
+        os.path.join(os.path.dirname(_dm_PROJECT_ROOT), path),
+    ]
+    for cand in candidates:
+        if os.path.exists(cand):
+            return cand
+    return candidates[0]
+
+
+def _dm_datasets_base_path(json_abs_path: str) -> str:
+    """由数据集 JSON 绝对路径推断 datasets 根目录（image_paths 的拼接基准）。"""
+    return os.path.dirname(os.path.dirname(json_abs_path))
+
+
+# ==================== DM 数据构建 ====================
+
+def build_dm_patients(task: str) -> List[Dict[str, Any]]:
+    """构建符合 PD 数据 schema 的 DM 患者列表，使其可直接喂给 ``PDDataset``。
+
+    DM 原始 JSON 的 ``image_paths`` 是扁平列表（无 central/whorl 区分），这里把
+    同一张图同时作为 central 与 whorl（duplicate 配对），以适配 dual_stream
+    编码器；并通过 ``group`` 字段编码二分类标签（control→0, pd→1），``stage`` 与
+    ``subtype`` 置空使其编码为 -1（不参与）。
+
+    参数：
+        task: 'dm_binary' 或 'dm_subtype'。
+
+    返回：
+        PD-schema 患者列表（每个含 group/stage/subtype/image_paths）。
+    """
+    if task not in DM_TASKS:
+        raise ValueError(f"未知 DM 任务: {task}（应为 {DM_TASKS}）")
+
+    json_abs = _dm_resolve_project_path(DM_JSON)
+    with open(json_abs, 'r', encoding='utf-8') as f:
+        raw_patients = json.load(f)
+
+    out: List[Dict[str, Any]] = []
+    for p in raw_patients:
+        group = p.get('group', '')
+        if task == 'dm_binary':
+            label = 0 if group == 'control' else 1
+        else:  # dm_subtype：排除 control，NDR vs NPDR
+            if group == 'control':
+                continue
+            label = _dm_DM_SUBTYPE_MAP.get(group)
+            if label is None:
+                continue
+
+        imgs = list(p.get('image_paths', []))
+        if not imgs:
+            continue
+
+        out.append({
+            'patient_id': p.get('patient_id', ''),
+            'name': p.get('name', ''),
+            # group 仅用于 encode_labels 得到二分类 pd_label：1→'pd'，0→'control'
+            'group': 'pd' if label == 1 else 'control',
+            'stage': 0,        # → stage_label = -1（不参与）
+            'subtype': '',     # → subtype_label = -1（不参与）
+            'image_paths': {'central': imgs, 'whorl': imgs},
+        })
+    return out
+
+
+# ==================== pd 自监督 backbone 复用 ====================
+
+def _dm_pretrain_signature(cfg: SimCLRExperimentConfig, input_size: int) -> str:
+    """根据 SimCLR 超参与 backbone 生成缓存签名（不含微调 seed）。"""
+    key = {
+        'backbone': cfg.BACKBONE,
+        'pretrained': str(cfg.PRETRAINED),
+        'simclr_epochs': cfg.SIMCLR_EPOCHS,
+        'simclr_lr': cfg.SIMCLR_LR,
+        'simclr_batch': cfg.SIMCLR_BATCH_SIZE,
+        'temperature': cfg.SIMCLR_TEMPERATURE,
+        'proj_dim': cfg.SIMCLR_PROJ_DIM,
+        'proj_hidden_dim': cfg.SIMCLR_PROJ_HIDDEN_DIM,
+        'simclr_wd': cfg.SIMCLR_WEIGHT_DECAY,
+        'input_size': input_size,
+        'pretrain_source': getattr(cfg, 'SIMCLR_PRETRAIN_DATASET', 'fold'),
+        'corn1_root': getattr(cfg, 'CORN1_ROOT', ''),
+        'corn1_splits': getattr(cfg, 'CORN1_PRETRAIN_SPLITS', ''),
+        'pretrain_json': PD_PRETRAIN_JSON,
+        'pretrain_mode': PD_PRETRAIN_MODE,
+        'pretrain_seed': PRETRAIN_SEED,
+    }
+    raw = json.dumps(key, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha1(raw.encode('utf-8')).hexdigest()[:12]
+
+
+def _dm_build_simclr_model_from_state(cfg: SimCLRExperimentConfig,
+                                   backbone_state: Dict[str, Any]) -> SimCLRModel:
+    """重建 SimCLRModel 并载入 backbone 权重（投影头随机初始化，不影响下游）。"""
+    model = SimCLRModel(
+        cfg.BACKBONE,
+        pretrained=False,
+        proj_hidden_dim=cfg.SIMCLR_PROJ_HIDDEN_DIM,
+        proj_out_dim=cfg.SIMCLR_PROJ_DIM,
+    )
+    model.get_backbone().load_state_dict(backbone_state)
+    return model.to(cfg.DEVICE)
+
+
+def get_or_build_pd_simclr(cfg: SimCLRExperimentConfig,
+                           classifier: SimCLRClassifier,
+                           log) -> SimCLRModel:
+    """获取在 pd_dataset_en 上预训练好的 SimCLR backbone（复用优先，必要时训练一次）。
+
+    复用优先级：
+    1. 环境变量 ``RUN_SIMCLR_PRETRAIN_CKPT`` 指定的 backbone ckpt；
+    2. 进程内缓存；
+    3. 磁盘缓存（按签名）；
+    4. 都没有则在完整 pd_dataset_en 上预训练一次并原子化写盘。
+    """
+    input_size = classifier._get_input_size()
+    sig = _dm_pretrain_signature(cfg, input_size)
+
+    # 1) 显式 ckpt 覆盖
+    env_ckpt = os.environ.get('RUN_SIMCLR_PRETRAIN_CKPT', '').strip()
+    if env_ckpt:
+        ckpt_abs = _dm_resolve_project_path(env_ckpt)
+        if os.path.exists(ckpt_abs):
+            log(f"[dm-transfer] 复用显式 SimCLR backbone ckpt: {ckpt_abs}")
+            state = torch.load(ckpt_abs, map_location=cfg.DEVICE)
+            backbone_state = state.get('backbone_state', state) if isinstance(state, dict) else state
+            return _dm_build_simclr_model_from_state(cfg, backbone_state)
+        log(f"[dm-transfer][warn] RUN_SIMCLR_PRETRAIN_CKPT 指定的文件不存在: {ckpt_abs}")
+
+    # 2) 进程内缓存
+    if sig in _dm_INPROC_PRETRAIN_CACHE:
+        return _dm_INPROC_PRETRAIN_CACHE[sig]
+
+    # 3) 磁盘缓存
+    cache_dir = _dm_resolve_project_path(PRETRAIN_CACHE_DIR)
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"{cfg.BACKBONE}_{sig}.pt")
+    if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
+        log(f"[dm-transfer] 复用 pd_dataset_en SimCLR backbone 缓存（跳过预训练）:\n"
+            f"             {cache_path}")
+        state = torch.load(cache_path, map_location=cfg.DEVICE)
+        model = _dm_build_simclr_model_from_state(cfg, state['backbone_state'])
+        _dm_INPROC_PRETRAIN_CACHE[sig] = model
+        return model
+
+    # 4) 训练一次：默认完整 pd_dataset_en；若配置为 corn1，则使用 CORN-1 图像。
+    pretrain_source = str(getattr(cfg, 'SIMCLR_PRETRAIN_DATASET', 'fold')).lower()
+    if pretrain_source in ('corn1', 'corn-1'):
+        log(f"[dm-transfer] 未找到缓存，开始在 CORN-1 上做一次 SimCLR 预训练"
+            f"（backbone={cfg.BACKBONE}, epochs={cfg.SIMCLR_EPOCHS}）...")
+        pd_dataset = classifier._resolve_pretrain_dataset(None)
+    else:
+        log(f"[dm-transfer] 未找到缓存，开始在 pd_dataset_en（{PD_PRETRAIN_MODE}）上做一次 "
+            f"SimCLR 预训练（backbone={cfg.BACKBONE}, epochs={cfg.SIMCLR_EPOCHS}）...")
+        pd_json_abs = _dm_resolve_project_path(PD_PRETRAIN_JSON)
+        pd_base_path = _dm_datasets_base_path(pd_json_abs)
+        pd_patients = load_and_filter_dataset(pd_json_abs, PD_PRETRAIN_MODE)
+        pd_dataset = PDDataset(
+            pd_patients, 'dual_stream',
+            classifier.train_transform, base_path=pd_base_path,
+        )
+        if len(pd_dataset) == 0:
+            raise RuntimeError(f"pd 预训练数据集为空: {pd_json_abs}")
+
+    set_seed(PRETRAIN_SEED)
+    model = simclr_pretrain(
+        backbone_name=cfg.BACKBONE,
+        pretrained=cfg.PRETRAINED,
+        train_dataset=pd_dataset,
+        num_epochs=cfg.SIMCLR_EPOCHS,
+        batch_size=cfg.SIMCLR_BATCH_SIZE,
+        lr=cfg.SIMCLR_LR,
+        temperature=cfg.SIMCLR_TEMPERATURE,
+        device=cfg.DEVICE,
+        proj_hidden_dim=cfg.SIMCLR_PROJ_HIDDEN_DIM,
+        proj_out_dim=cfg.SIMCLR_PROJ_DIM,
+        weight_decay=cfg.SIMCLR_WEIGHT_DECAY,
+        num_workers=cfg.NUM_WORKERS,
+        input_size=input_size,
+        verbose=True,
+    )
+
+    # 原子化写盘（容忍并发：tmp + replace）
+    backbone_state = {k: v.detach().cpu() for k, v in model.get_backbone().state_dict().items()}
+    payload = {
+        'backbone_state': backbone_state,
+        'meta': {
+            'backbone': cfg.BACKBONE,
+            'signature': sig,
+            'pretrain_source': getattr(cfg, 'SIMCLR_PRETRAIN_DATASET', 'fold'),
+            'pretrain_json': PD_PRETRAIN_JSON,
+            'pretrain_mode': PD_PRETRAIN_MODE,
+            'pretrain_seed': PRETRAIN_SEED,
+            'simclr_epochs': cfg.SIMCLR_EPOCHS,
+            'temperature': cfg.SIMCLR_TEMPERATURE,
+            'proj_dim': cfg.SIMCLR_PROJ_DIM,
+            'created': datetime.now().isoformat(timespec='seconds'),
+        },
+    }
+    tmp_path = f"{cache_path}.tmp.{os.getpid()}"
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, cache_path)
+    log(f"[dm-transfer] 已缓存 pd SimCLR backbone: {cache_path}")
+
+    _dm_INPROC_PRETRAIN_CACHE[sig] = model
+    return model
+
+
+# ==================== 单实验运行 ====================
+
+def _dm_aggregate_fold_metrics(fold_metrics: List[Dict[str, float]]) -> Dict[str, float]:
+    if not fold_metrics:
+        return {}
+    accs = [m['acc'] for m in fold_metrics]
+    patient_accs = [m.get('patient_acc', 0.0) for m in fold_metrics]
+    f1s = [m['f1'] for m in fold_metrics]
+    train_accs = [m.get('train_acc', 0.0) for m in fold_metrics]
+    return {
+        'avg_train_acc': float(np.mean(train_accs)),
+        'avg_acc': float(np.mean(accs)),
+        'std_acc': float(np.std(accs)),
+        'avg_patient_acc': float(np.mean(patient_accs)),
+        'std_patient_acc': float(np.std(patient_accs)),
+        'avg_f1': float(np.mean(f1s)),
+        'std_f1': float(np.std(f1s)),
+        'num_folds': len(fold_metrics),
+    }
+
+
+def _dm_run_dm_task_kfold(classifier: SimCLRClassifier,
+                       cfg: SimCLRExperimentConfig,
+                       task: str) -> Dict[str, Any]:
+    """对单个 DM 任务执行 patient-level K-fold（复用二分类 'pd' 头）。"""
+    dm_json_abs = _dm_resolve_project_path(DM_JSON)
+    dm_base_path = _dm_datasets_base_path(dm_json_abs)
+
+    patients = build_dm_patients(task)
+    dataset = PDDataset(
+        patients, cfg.ARCHITECTURE,
+        classifier.train_transform, base_path=dm_base_path,
+    )
+    print(f"\n{'='*60}\nDM 任务: {task} | 样本数: {len(dataset)} | "
+          f"患者数: {len(set(dataset.patient_ids))}\n{'='*60}")
+    if len(dataset) == 0:
+        print(f"⚠ DM 任务 {task} 无可用样本，跳过")
+        return {}
+
+    splits = list(stratified_kfold(
+        dataset.PD_labels, dataset.stage_labels, dataset.subtype_labels,
+        n_splits=cfg.NUM_FOLDS, random_state=cfg.SEED,
+        kfold_mode=cfg.KFOLD_MODE, patient_ids=dataset.patient_ids,
+    ))
+
+    fold_metrics: List[Dict[str, float]] = []
+    all_labels: List[int] = []
+    all_preds: List[int] = []
+
+    for fold_idx, (train_idx, val_idx) in enumerate(splits):
+        print(f"\n--- DM {task} Fold {fold_idx + 1}/{cfg.NUM_FOLDS} ---")
+        train_subset = Subset(dataset, train_idx)
+        val_subset = Subset(dataset, val_idx)
+
+        result = classifier.train(
+            train_subset, val_subset, _dm_DM_HEAD_TASK,
+            fold_idx=fold_idx + 1, suffix=f"_{task}",
+        )
+        vr = result['val_result']
+        if vr.get('labels'):
+            th = result.get('train_history', {})
+            patient_labels, patient_ids = task_labels_for_indices(dataset, val_idx, 'pd')
+            patient_result = save_fold_patient_outputs(
+                cfg.OUTPUT_DIR, _dm_DM_HEAD_TASK, f"_{task}", fold_idx + 1,
+                patient_ids, patient_labels,
+                probs=vr.get('probs'), logits=vr.get('logits'),
+            )
+            fold_metrics.append({
+                'fold': fold_idx + 1,
+                'train_acc': th['train_acc'][-1] if th.get('train_acc') else 0.0,
+                'acc': vr['acc'],
+                'patient_acc': patient_result['patient_acc'],
+                'n_patients': patient_result['n_patients'],
+                'patient_logits_json': patient_result['patient_logits_json'],
+                'patient_logits_csv': patient_result['patient_logits_csv'],
+                'f1': vr['f1'],
+            })
+            all_labels.extend(vr['labels'])
+            all_preds.extend(vr['preds'])
+            print(f"  Acc: {vr['acc']:.4f}, PatientAcc: {patient_result['patient_acc']:.4f}, F1: {vr['f1']:.4f}")
+
+    summary = _dm_aggregate_fold_metrics(fold_metrics)
+    if summary:
+        print(f"\n📊 DM {task}: TrainAcc={summary['avg_train_acc']:.4f}, "
+              f"ValAcc={summary['avg_acc']:.4f}±{summary['std_acc']:.4f}, "
+              f"PatientAcc={summary.get('avg_patient_acc', 0.0):.4f}±{summary.get('std_patient_acc', 0.0):.4f}, "
+              f"ValF1={summary['avg_f1']:.4f}±{summary['std_f1']:.4f}")
+    return {
+        'fold_results': fold_metrics,
+        'final_results': summary,
+        'all_predictions': {'labels': all_labels, 'preds': all_preds},
+    }
+
+
+def run_single_dm_transfer_experiment(cfg: SimCLRExperimentConfig,
+                                      tasks: Optional[List[str]] = None,
+                                      output_dir: Optional[str] = None) -> Dict[str, Any]:
+    """运行单组 DM 迁移实验：复用 pd SimCLR backbone，仅微调下游头。
+
+    参数：
+        cfg: SimCLR 实验配置（由批量 runner 注入超参）。
+        tasks: DM 任务列表，默认 ``DM_TASKS``。
+        output_dir: 输出目录（由批量 runner 提供）。
+
+    返回：
+        结果字典（每个 DM 任务的 K-fold 汇总）。
+    """
+    tasks = [t for t in (tasks or DM_TASKS) if t in DM_TASKS] or list(DM_TASKS)
+
+    output_dir = output_dir or os.path.join(
+        _dm_resolve_project_path('results/simclr_dm_transfer'),
+        f"dm_transfer_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+    )
+    os.makedirs(output_dir, exist_ok=True)
+    cfg.OUTPUT_DIR = output_dir
+    save_config(cfg, output_dir)
+
+    log_file = open(os.path.join(output_dir, 'output.txt'), 'w', encoding='utf-8')
+    original_stdout = sys.stdout
+    sys.stdout = Tee(original_stdout, log_file)
+
+    start_time = time.time()
+    results: Dict[str, Any] = {}
+    try:
+        print("=" * 60)
+        print("SimCLR → DM 迁移实验（复用 pd_dataset_en 自监督表征，仅微调下游头）")
+        print("=" * 60)
+        print(f"Backbone={cfg.BACKBONE} | Arch={cfg.ARCHITECTURE} | "
+              f"Pretrained={cfg.PRETRAINED}")
+        print(f"微调: epochs={cfg.NUM_EPOCHS}, lr={cfg.LEARNING_RATE}, "
+              f"wd={cfg.WEIGHT_DECAY}, backbone_lr_ratio={cfg.BACKBONE_LR_RATIO}, "
+              f"pd_loss={cfg.PD_LOSS_TYPE}")
+        print(f"K-fold: {cfg.NUM_FOLDS} ({cfg.KFOLD_MODE}) | seed={cfg.SEED} | "
+              f"tasks={tasks}")
+
+        classifier = SimCLRClassifier(cfg)
+
+        # 复用 pd 自监督 backbone（不重新训练）
+        simclr_model = get_or_build_pd_simclr(cfg, classifier, log=print)
+        classifier.precomputed_simclr = simclr_model
+
+        # 复原微调阶段随机性（pd 预训练可能改过全局 seed）
+        set_seed(cfg.SEED)
+
+        for task in tasks:
+            results[task] = _dm_run_dm_task_kfold(classifier, cfg, task)
+
+        _dm_write_dm_report(output_dir, cfg, results, tasks)
+    finally:
+        sys.stdout = original_stdout
+        log_file.close()
+
+    duration = time.time() - start_time
+    results['meta'] = {
+        'output_dir': output_dir,
+        'duration': duration,
+        'tasks': tasks,
+        'backbone': cfg.BACKBONE,
+        'seed': cfg.SEED,
+    }
+    with open(os.path.join(output_dir, 'results.json'), 'w', encoding='utf-8') as f:
+        json.dump(results, f, indent=2, ensure_ascii=False, default=_dm_json_default)
+
+    print(f"DM 迁移实验完成（{cfg.BACKBONE}, seed={cfg.SEED}），用时 "
+          f"{duration / 60:.1f}min，结果: {output_dir}")
+    return results
+
+
+def _dm_write_dm_report(output_dir: str, cfg: SimCLRExperimentConfig,
+                     results: Dict[str, Any], tasks: List[str]) -> None:
+    path = os.path.join(output_dir, 'experiment_report.md')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write("# SimCLR → DM 迁移实验报告\n\n")
+        f.write(f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        f.write("复用 `pd_dataset_en` 上的 SimCLR 自监督 backbone，仅在 "
+                "`dm_dataset_en` 上微调下游二分类头。\n\n")
+        f.write("## 配置\n\n| 参数 | 值 |\n|---|---|\n")
+        f.write(f"| Backbone | `{cfg.BACKBONE}` |\n")
+        f.write(f"| 架构 | `{cfg.ARCHITECTURE}` |\n")
+        f.write(f"| ImageNet 预训练 | `{cfg.PRETRAINED}` |\n")
+        f.write(f"| SimCLR 预训练源 | `{getattr(cfg, 'SIMCLR_PRETRAIN_DATASET', 'fold')}` |\n")
+        f.write(f"| CORN-1 路径 | `{getattr(cfg, 'CORN1_ROOT', '')}` |\n")
+        f.write(f"| CORN-1 splits | `{getattr(cfg, 'CORN1_PRETRAIN_SPLITS', '')}` |\n")
+        f.write(f"| SimCLR Epochs/T/dim | {cfg.SIMCLR_EPOCHS} / "
+                f"{cfg.SIMCLR_TEMPERATURE} / {cfg.SIMCLR_PROJ_DIM} |\n")
+        f.write(f"| 微调 Epochs/LR/WD | {cfg.NUM_EPOCHS} / {cfg.LEARNING_RATE} / "
+                f"{cfg.WEIGHT_DECAY} |\n")
+        f.write(f"| Backbone LR 倍率 | {cfg.BACKBONE_LR_RATIO} |\n")
+        f.write(f"| 微调损失 | `{cfg.PD_LOSS_TYPE}` (eps={cfg.LABEL_SMOOTH_EPS}) |\n")
+        f.write(f"| K-fold | {cfg.NUM_FOLDS} ({cfg.KFOLD_MODE}) |\n")
+        f.write(f"| Seed | {cfg.SEED} |\n\n")
+
+        f.write("## 结果摘要\n\n| DM 任务 | Patient Accuracy | Image Accuracy | F1 |\n|---|---|---|---|\n")
+        for task in tasks:
+            fr = results.get(task, {}).get('final_results', {})
+            if fr:
+                f.write(
+                    f"| {task} | {fr.get('avg_patient_acc', 0.0):.4f}±{fr.get('std_patient_acc', 0.0):.4f} | "
+                    f"{fr['avg_acc']:.4f}±{fr['std_acc']:.4f} | "
+                    f"{fr['avg_f1']:.4f}±{fr['std_f1']:.4f} |\n"
+                )
+            else:
+                f.write(f"| {task} | - | - | - |\n")
+        f.write("\n")

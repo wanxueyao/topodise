@@ -13,7 +13,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Tuple, Literal, Dict, Optional
+from typing import List, Literal, Dict
 import logging
 
 logger = logging.getLogger(__name__)
@@ -419,34 +419,3 @@ class ClassificationBranch(nn.Module):
         
         outputs['losses'] = losses
         return outputs
-
-
-if __name__ == '__main__':
-    # 测试三种分类器
-    B = 4
-    num_pd_classes = 2
-    num_stage_classes = 5
-    num_subtype_classes = 3
-    
-    segmentation = torch.randn(B, 1, 64, 64)
-    decoder_features = [torch.randn(B, 256, 64, 64), torch.randn(B, 512, 32, 32)]
-    
-    # 测试标签
-    pd_labels = torch.randint(0, num_pd_classes, (B,))
-    stage_labels = torch.randint(0, num_stage_classes, (B,))
-    subtype_labels = torch.randint(0, num_subtype_classes, (B,))
-    
-    # 测试单流
-    classifier = ClassificationBranch('single_stream', 1, decoder_features=[256, 512])
-    outputs = classifier(segmentation, decoder_features, pd_labels, stage_labels, subtype_labels)
-    print("单流输出:", outputs['pd_logits'].shape)
-    
-    # 测试双流
-    classifier = ClassificationBranch('dual_stream', 1, decoder_features=[256, 512])
-    outputs = classifier(segmentation, decoder_features, pd_labels, stage_labels, subtype_labels)
-    print("双流输出:", outputs['pd_logits'].shape)
-    
-    # 测试混合单流
-    classifier = ClassificationBranch('mixed_single_stream', 1, decoder_features=[256, 512])
-    outputs = classifier(segmentation, decoder_features, pd_labels, stage_labels, subtype_labels)
-    print("混合单流输出:", outputs['pd_logits'].shape)

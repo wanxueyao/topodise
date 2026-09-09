@@ -1,63 +1,38 @@
-"""
-main.py - 帕金森病图像分类实验主程序
+"""basic 实验实现：训练、评估及单组执行；参数与批量控制见 batch_experiments.py。"""
+from __future__ import annotations
 
-模块职责
---------
-执行单组配置下的完整 K-fold 交叉验证实验:
-1. 加载数据并生成 K-fold 划分
-2. 逐 fold 训练和验证
-3. 汇总指标 (Acc, F1, AUC)
-4. 生成可视化 (训练曲线、混淆矩阵、ROC)
-5. 输出实验报告 (Markdown 格式)
+if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from experiments._execution import single_main
+    single_main("experiments.basic_experiments.main")
+    raise SystemExit(0)
 
-接口设计
---------
-本模块为单次实验入口，为未来批量实验预留以下接口:
-
-输入接口:
-    - ExperimentConfig: 可通过修改类属性或继承来自定义配置
-    - run_single_experiment(config): 接受配置对象，返回结果字典
-    
-输出接口:
-    - 返回值: Dict[str, Any] 包含所有任务的详细结果
-    - 输出目录: results/<arch>_<dataset>_<backbone>_<epochs>_<timestamp>/
-        - config.txt: 配置记录
-        - output.txt: 控制台日志
-        - experiment_report.md: 实验报告
-        - *.png: 可视化图表
-        - best_model_*.pth: 最佳模型
-
-未来批量实验调用示例:
-    >>> from main import run_single_experiment, ExperimentConfig
-    >>> 
-    >>> configs = []
-    >>> for backbone in ['resnet18', 'resnet34']:
-    ...     for pretrained in [True, 'Half']:
-    ...         cfg = ExperimentConfig()
-    ...         cfg.BACKBONE = backbone
-    ...         cfg.PRETRAINED = pretrained
-    ...         configs.append(cfg)
-    >>> 
-    >>> all_results = {str(i): run_single_experiment(cfg) for i, cfg in enumerate(configs)}
-"""
+from utils.td_rest import resolve_baseline_tasks, td_rest_rows, td_rest_fold, save_td_rest_results
 import sys
 import os
 import time
-import argparse
 import torch
 import numpy as np
 from datetime import datetime
 from typing import Literal, List, Dict, Any, Optional
-from dataclasses import dataclass, field, asdict
+from core.basic_classifier import PDClassifier, PDClassifierConfig, TASK_CONFIG
+from core.data_loader import PDDataset, load_and_filter_dataset, stratified_kfold
+from utils.patient_outputs import save_fold_patient_outputs, task_labels_for_indices
+from utils.misc import set_seed, Tee, create_output_dir, save_config
+from utils.visualize import plot_confusion_matrix, plot_roc_auc, plot_training_curves
+import json
+from collections import defaultdict
+from typing import Tuple
+from torch.utils.data import DataLoader
+from core.data_loader import SUBTYPE_MAP
+from utils.subtype_hierarchy import SUBTYPE_TO_3CLS, build_patient_5x3_subtype_folds, subtype_pigd_mixed_label, subtype_tdrest_label
+
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from core.basic_classifier import PDClassifier, PDClassifierConfig, TASK_CONFIG
-from core.data_loader import PDDataset, load_and_filter_dataset, stratified_kfold, KFoldMode
-from utils.patient_outputs import save_fold_patient_outputs, task_labels_for_indices
-from utils.misc import set_seed, Tee, create_output_dir, save_config
-from utils.visualize import plot_confusion_matrix, plot_roc_auc, plot_training_curves
 
 
 # ==================== 实验配置 ====================
@@ -95,7 +70,7 @@ class ExperimentConfig(PDClassifierConfig):
     """
     # ========== 架构 ==========
     ARCHITECTURE: Literal['single_stream', 'mixed_single_stream', 'dual_stream'] = 'single_stream'
-    BACKBONE: Literal['resnet18', 'resnet34', 'densenet121', 'efficientnet'] = 'resnet18'
+    BACKBONE: Literal['resnet18'] = 'resnet18'
     PRETRAINED: Literal[True, False, 'Half'] = True
     
     # ========== 数据 ==========
@@ -637,26 +612,453 @@ def run_single_experiment(config: Optional[ExperimentConfig] = None,
 
 # ==================== 命令行入口 ====================
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="帕金森病图像分类实验")
-    parser.add_argument('--backbone', default=None,
-                        help='覆盖默认 backbone (resnet18/resnet34/densenet121/efficientnet)')
-    parser.add_argument('--epochs', type=int, default=None,
-                        help='覆盖默认训练轮数')
-    parser.add_argument('--tasks', nargs='+', default=None,
-                        help='指定任务 (pd stage subtype)')
-    parser.add_argument('--kfold-mode', choices=['patient', 'image'], default=None,
-                        help='K-fold划分模式: patient(按患者，避免数据泄露) 或 image(按图像)')
-    args = parser.parse_args()
-    
+
+def build_paper_config(exp, device="cpu", num_workers=0):
+    """Translate a selected paper recipe without changing its hyperparameters."""
     config = ExperimentConfig()
-    
-    # 应用命令行参数覆盖
-    if args.backbone:
-        config.BACKBONE = args.backbone
-    if args.epochs:
-        config.NUM_EPOCHS = args.epochs
-    if args.kfold_mode:
-        config.KFOLD_MODE = args.kfold_mode
-    
-    run_single_experiment(config, tasks=args.tasks)
+    config.ARCHITECTURE = exp.get('architecture', 'single_stream')
+    config.BACKBONE = exp.get('backbone', 'resnet18')
+    config.PRETRAINED = exp.get('pretrained', True)
+    config.BATCH_SIZE = exp.get('batch_size', config.BATCH_SIZE)
+    config.NUM_EPOCHS = exp.get('epochs', 50)
+    config.LEARNING_RATE = exp.get('learning_rate', 0.001)
+    config.WEIGHT_DECAY = exp.get('weight_decay', config.WEIGHT_DECAY)
+    config.BACKBONE_LR_RATIO = exp.get('backbone_lr_ratio', config.BACKBONE_LR_RATIO)
+    config.LR_SCHEDULER = exp.get('lr_scheduler', config.LR_SCHEDULER)
+    config.LR_STEP_SIZE = exp.get('lr_step_size', config.LR_STEP_SIZE)
+    config.LR_GAMMA = exp.get('lr_gamma', config.LR_GAMMA)
+    config.EARLY_STOPPING = exp.get('early_stopping', config.EARLY_STOPPING)
+    config.PATIENCE = exp.get('patience', config.PATIENCE)
+    config.DATASET_MODE = exp.get('dataset_mode', 'pd_all')
+    config.NUM_FOLDS = exp.get('num_folds', config.NUM_FOLDS)
+    config.SEED = exp.get('seed', config.SEED)
+    config.KFOLD_MODE = exp.get('kfold_mode', 'patient')
+    config.DATA_AUGMENTATION = exp.get('data_augmentation', True)
+    config.AUG_HORIZONTAL_FLIP = exp.get('aug_horizontal_flip', config.AUG_HORIZONTAL_FLIP)
+    config.AUG_ROTATION = exp.get('aug_rotation', config.AUG_ROTATION)
+    config.AUG_BRIGHTNESS = exp.get('aug_brightness', config.AUG_BRIGHTNESS)
+    config.AUG_CONTRAST = exp.get('aug_contrast', config.AUG_CONTRAST)
+    config.AUG_SATURATION = exp.get('aug_saturation', config.AUG_SATURATION)
+    config.AUG_HUE = exp.get('aug_hue', config.AUG_HUE)
+    config.NUM_WORKERS = num_workers
+    config.DEVICE = device
+    return config
+
+
+def run_paper_experiment(exp, output_dir, device="cpu", num_workers=0):
+    exp = resolve_baseline_tasks(exp)
+    cfg = build_paper_config(exp, device, num_workers)
+    if exp.get('_transfer') == 'dm':
+        if exp.get('_transfer_source') != 'imagenet':
+            raise ValueError('Basic 当前 DM 配置仅支持 ImageNet 初始化；不读取 PD 训练权重')
+        return run_single_dm_baseline_experiment(cfg, tasks=exp['_run_tasks'], output_dir=output_dir)
+    if exp.get('_subtype_td_rest'):
+        cfg.OUTPUT_DIR = output_dir
+        save_config(cfg, output_dir)
+        return run_subtype_td_rest_experiment(cfg, output_dir=output_dir, seed=cfg.SEED,
+            n_splits=exp.get('num_folds', 5), repeats=exp.get('kfold_repeats', 3))
+    return run_single_experiment(cfg, tasks=exp['_run_tasks'], output_dir=output_dir)
+
+# ==================== DM workflow ====================
+
+
+
+
+# ==================== DM 数据常量 ====================
+
+# DM 数据集 JSON（相对 codes/ 项目根；运行时 cwd 已切到项目根）
+DM_JSON = 'datasets/dm_dataset_en/dm_patients_dataset_en.json'
+
+# DM 支持的任务
+DM_TASKS = ['dm_binary', 'dm_subtype']
+
+# dm_subtype 子型标签映射（排除 control）
+_dm_DM_SUBTYPE_MAP = {'NDR': 0, 'NPDR': 1}
+
+# DM 任务的中文展示名（用于报告，避免索引 TASK_CONFIG[dm_task]）
+_dm_DM_TASK_NAME = {
+    'dm_binary': 'DM二分类 (control vs DR)',
+    'dm_subtype': 'DM亚型 (NDR vs NPDR)',
+}
+
+# codes/ 项目根
+_dm_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+# ==================== 路径解析 ====================
+
+def _dm_resolve_project_path(path: str) -> str:
+    """把相对路径解析为存在的绝对路径，兼容从 ARIS 根或 codes 启动。"""
+    if os.path.isabs(path):
+        return path
+    candidates = [
+        os.path.join(_dm_PROJECT_ROOT, path),
+        os.path.join(os.path.dirname(_dm_PROJECT_ROOT), path),
+        path,
+    ]
+    for cand in candidates:
+        if os.path.exists(cand):
+            return cand
+    return candidates[0]
+
+
+def _dm_datasets_base_path(json_abs_path: str) -> str:
+    """由数据集 JSON 绝对路径推断 datasets 根目录（image_paths 拼接基准）。"""
+    return os.path.dirname(os.path.dirname(json_abs_path))
+
+
+# ==================== DM 数据构建 ====================
+
+def build_dm_patients(task: str) -> List[Dict[str, Any]]:
+    """构建符合 PD 数据 schema 的 DM 患者列表，使其可直接喂给 ``PDDataset``。
+
+    DM 原始 JSON 的 ``image_paths`` 是扁平列表（无 central/whorl 区分），这里把
+    同一张图同时作为 central 与 whorl（duplicate 配对），以适配 dual_stream
+    编码器；并通过 ``group`` 字段编码二分类标签（control→0, 阳性→1），``stage`` 与
+    ``subtype`` 置空使其编码为不参与。
+
+    参数：
+        task: 'dm_binary' 或 'dm_subtype'。
+
+    返回：
+        PD-schema 患者列表（每个含 group/stage/subtype/image_paths）。
+    """
+    if task not in DM_TASKS:
+        raise ValueError(f"未知 DM 任务: {task}（应为 {DM_TASKS}）")
+
+    json_abs = _dm_resolve_project_path(DM_JSON)
+    with open(json_abs, 'r', encoding='utf-8') as f:
+        raw_patients = json.load(f)
+
+    out: List[Dict[str, Any]] = []
+    for p in raw_patients:
+        group = p.get('group', '')
+        if task == 'dm_binary':
+            label = 0 if group == 'control' else 1
+        else:  # dm_subtype：排除 control，NDR vs NPDR
+            if group == 'control':
+                continue
+            label = _dm_DM_SUBTYPE_MAP.get(group)
+            if label is None:
+                continue
+
+        imgs = list(p.get('image_paths', []))
+        if not imgs:
+            continue
+
+        out.append({
+            'patient_id': p.get('patient_id', ''),
+            'name': p.get('name', ''),
+            # group 仅用于 encode_labels 得到二分类 pd_label：1→'pd'，0→'control'
+            'group': 'pd' if label == 1 else 'control',
+            'stage': 0,        # → stage_label 不参与
+            'subtype': '',     # → subtype_label 不参与
+            'image_paths': {'central': imgs, 'whorl': imgs},
+        })
+    return out
+
+
+# ==================== DM 基线运行器 ====================
+
+class DMBaselineRunner(ExperimentRunner):
+    """DM 数据集通用 baseline 运行器（正常重新训练，非迁移）。
+
+    复用 ``ExperimentRunner`` 的训练 / K-fold / 可视化 / 汇总能力，仅重写
+    ``_execute_experiment``：按 DM 任务分别构建数据集并跑二分类 K-fold。
+    """
+
+    def _execute_experiment(self, tasks: List[str]) -> Dict[str, Any]:
+        config = self.config
+        self._print_header()
+
+        json_abs = _dm_resolve_project_path(DM_JSON)
+        base_path = _dm_datasets_base_path(json_abs)
+
+        # DM baseline 强制使用双流（与 pd 同框架）；single_stream 不适用此处映射
+        architecture = config.ARCHITECTURE
+        if architecture == 'single_stream':
+            print("⚠ DM baseline 不支持 single_stream，自动切换为 dual_stream")
+            architecture = 'dual_stream'
+
+        results: Dict[str, Any] = {}
+
+        for dm_task in tasks:
+            if dm_task not in DM_TASKS:
+                print(f"⚠ 跳过未知 DM 任务: {dm_task}")
+                continue
+
+            print(f"\n{'='*60}")
+            print(f"任务: {_dm_DM_TASK_NAME.get(dm_task, dm_task)}")
+            print('='*60)
+
+            patients = build_dm_patients(dm_task)
+            print(f"加载 {len(patients)} 个 DM 患者 (任务={dm_task})")
+            if not patients:
+                print(f"⚠ 任务 {dm_task} 无患者，跳过")
+                continue
+
+            dataset = PDDataset(
+                patients, architecture,
+                self.classifier.train_transform,
+                base_path=base_path,
+            )
+            if len(dataset) == 0:
+                print(f"⚠ 任务 {dm_task} 数据集为空，跳过")
+                continue
+
+            print(f"样本数: {len(dataset)}")
+            # 两个 DM 任务都是二分类，统一复用 'pd' 二分类头；suffix 区分任务
+            results[dm_task] = self._run_kfold(dataset, 'pd', suffix=f"_{dm_task}")
+
+        self._generate_dm_report(results)
+        return results
+
+    def _generate_dm_report(self, results: Dict[str, Any]) -> None:
+        """生成 DM baseline 的 Markdown 报告（不依赖 TASK_CONFIG[dm_task]）。"""
+        report_path = os.path.join(self.output_dir, 'experiment_report.md')
+        cfg = self.config
+        pd_name = TASK_CONFIG['pd']['name']
+
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write("# DM Baseline 实验报告\n\n")
+            f.write(f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+            f.write("## 实验配置\n\n")
+            f.write("| 参数 | 值 |\n|---|---|\n")
+            f.write("| 数据集 | `dm_dataset_en` |\n")
+            f.write("| 训练方式 | `正常重新训练 (非迁移)` |\n")
+            f.write(f"| 架构 | `{cfg.ARCHITECTURE}` |\n")
+            f.write(f"| Backbone | `{cfg.BACKBONE}` |\n")
+            f.write(f"| 预训练 | `{cfg.PRETRAINED}` |\n")
+            f.write(f"| K-fold | {cfg.NUM_FOLDS} |\n")
+            f.write(f"| K-fold模式 | `{cfg.KFOLD_MODE}` |\n")
+            f.write(f"| Epochs | {cfg.NUM_EPOCHS} |\n")
+            f.write(f"| 学习率 | {cfg.LEARNING_RATE} |\n")
+            f.write(f"| Batch Size | {cfg.BATCH_SIZE} |\n")
+            f.write(f"| 数据增强 | `{'开启' if cfg.DATA_AUGMENTATION else '关闭'}` |\n")
+            f.write("\n")
+
+            f.write("## 结果摘要\n\n")
+            f.write("| DM 任务 | Accuracy | F1 Score |\n|---|---|---|\n")
+            for dm_task, result in results.items():
+                if dm_task == 'meta' or 'final_results' not in result:
+                    continue
+                fr = result['final_results']
+                f.write(
+                    f"| {_dm_DM_TASK_NAME.get(dm_task, dm_task)} | "
+                    f"{fr['avg_acc']:.4f}±{fr['std_acc']:.4f} | "
+                    f"{fr['avg_f1']:.4f}±{fr['std_f1']:.4f} |\n"
+                )
+
+            f.write("\n---\n\n## 详细结果\n\n")
+            for dm_task, result in results.items():
+                if dm_task == 'meta':
+                    continue
+                # 复用基类的 task section 写法（图像文件名前缀为 pd_name+suffix）
+                display = _dm_DM_TASK_NAME.get(dm_task, dm_task)
+                f.write(f"### {display}\n\n")
+                if 'final_results' not in result:
+                    f.write("*无有效结果*\n\n")
+                    continue
+                fr = result['final_results']
+                f.write("| 指标 | 值 |\n|---|---|\n")
+                f.write(f"| Accuracy | {fr['avg_acc']:.4f} ± {fr['std_acc']:.4f} |\n")
+                f.write(f"| F1 Score | {fr['avg_f1']:.4f} ± {fr['std_f1']:.4f} |\n")
+                if 'avg_precision' in fr:
+                    f.write(f"| Precision | {fr['avg_precision']:.4f} ± {fr['std_precision']:.4f} |\n")
+                if 'avg_recall' in fr:
+                    f.write(f"| Recall | {fr['avg_recall']:.4f} ± {fr['std_recall']:.4f} |\n")
+                f.write("\n")
+
+                suffix = f"_{dm_task}"
+                cm_file = f"{pd_name}{suffix}_Test_cm.png"
+                roc_file = f"{pd_name}{suffix}_Test_roc.png"
+                if os.path.exists(os.path.join(self.output_dir, cm_file)):
+                    f.write(f"**混淆矩阵**:\n\n![混淆矩阵]({cm_file})\n\n")
+                if os.path.exists(os.path.join(self.output_dir, roc_file)):
+                    f.write(f"**ROC 曲线**:\n\n![ROC曲线]({roc_file})\n\n")
+
+            f.write("\n---\n\n## 附件说明\n\n")
+            f.write("| 文件 | 说明 |\n|---|---|\n")
+            f.write("| `config.txt` | 完整配置 |\n")
+            f.write("| `output.txt` | 训练日志 |\n")
+            f.write("| `best_model_*.pth` | 最佳模型权重 |\n")
+
+        print(f"✓ 生成报告: {report_path}")
+
+
+# ==================== 公共接口 ====================
+
+def run_single_dm_baseline_experiment(config: Optional[ExperimentConfig] = None,
+                                      tasks: Optional[List[str]] = None,
+                                      output_dir: Optional[str] = None) -> Dict[str, Any]:
+    """运行单次 DM baseline 实验（批量实验入口）。
+
+    参数：
+        config: 实验配置，默认 ``ExperimentConfig()``。
+        tasks: DM 任务列表，默认 ``['dm_binary', 'dm_subtype']``。
+        output_dir: 输出目录，默认自动生成。
+
+    返回：
+        实验结果字典。
+    """
+    if config is None:
+        config = ExperimentConfig()
+    if tasks is None:
+        tasks = list(DM_TASKS)
+
+    runner = DMBaselineRunner(config)
+    return runner.run(tasks=tasks, output_dir=output_dir)
+
+
+# ==================== SUBTYPE workflow ====================
+
+
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+
+BASE_PATH = 'datasets'
+
+
+def _subtype_relabel_subtype(dataset: PDDataset, patients: List[Dict], task: str) -> None:
+    """根据子任务覆盖 dataset.subtype_labels（pigd_mixed 的 TD 置 -1 以被 mask）。"""
+    new_labels: List[int] = []
+    for i in range(len(dataset.samples)):
+        y3 = SUBTYPE_TO_3CLS[patients[dataset.patient_ids[i]]['subtype']]
+        if task == 'pd_subtype_tdrest':
+            new_labels.append(subtype_tdrest_label(y3))
+        else:  # pd_subtype_pigd_mixed
+            lab = subtype_pigd_mixed_label(y3)
+            new_labels.append(-1 if lab is None else lab)
+    dataset.subtype_labels = new_labels
+
+
+def _subtype_train_binary_subtask(classifier: PDClassifier, train_patients: List[Dict],
+                          val_patients: List[Dict], task: str, fold_idx: int):
+    """训练单个二分类子任务，返回训练好的模型。"""
+    cfg = classifier.config
+    train_ds = PDDataset(train_patients, cfg.ARCHITECTURE,
+                         classifier.train_transform, base_path=BASE_PATH)
+    val_ds = PDDataset(val_patients, cfg.ARCHITECTURE,
+                       classifier.val_transform, base_path=BASE_PATH)
+    _subtype_relabel_subtype(train_ds, train_patients, task)
+    _subtype_relabel_subtype(val_ds, val_patients, task)
+    result = classifier.train(train_ds, val_ds, task=task,
+                              fold_idx=fold_idx, suffix=f"_{task}")
+    return result['model']
+
+
+def _subtype_infer_patient_level(classifier: PDClassifier, model, patients: List[Dict]
+                         ) -> Tuple[Dict[str, int], Dict[str, float]]:
+    """
+    对一组患者做 patient-level 推理。
+
+    对每个患者的所有图像概率取均值，argmax 作为患者预测。
+
+    Returns:
+        (pred_by_pid, prob_class1_by_pid)
+    """
+    cfg = classifier.config
+    dataset = PDDataset(patients, cfg.ARCHITECTURE,
+                        classifier.val_transform, base_path=BASE_PATH)
+    loader = DataLoader(dataset, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=0)
+
+    device = cfg.DEVICE
+    model.eval()
+    all_probs: List[np.ndarray] = []
+    with torch.no_grad():
+        for batch in loader:
+            if isinstance(batch[0], (tuple, list)):
+                (central, whorl), _, _, _ = batch
+                outputs = model(central.to(device), whorl.to(device))
+            else:
+                img, _, _, _ = batch
+                outputs = model(img.to(device))
+            probs = torch.softmax(outputs, dim=1)
+            all_probs.append(probs.cpu().numpy())
+
+    if not all_probs:
+        return {}, {}
+
+    probs = np.concatenate(all_probs, axis=0)  # [N, 2]，与 dataset 顺序对齐
+
+    # 按患者聚合（patient_ids 为 patients 列表内的下标）
+    sum_probs: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(probs.shape[1]))
+    counts: Dict[int, int] = defaultdict(int)
+    for i, pidx in enumerate(dataset.patient_ids):
+        sum_probs[pidx] += probs[i]
+        counts[pidx] += 1
+
+    pred_by_pid: Dict[str, int] = {}
+    prob_class1_by_pid: Dict[str, float] = {}
+    for pidx, total in sum_probs.items():
+        mean_prob = total / max(1, counts[pidx])
+        patient_id = patients[pidx]['patient_id']
+        pred_by_pid[patient_id] = int(np.argmax(mean_prob))
+        prob_class1_by_pid[patient_id] = float(mean_prob[1])
+    return pred_by_pid, prob_class1_by_pid
+
+
+def run_subtype_td_rest_experiment(config, output_dir: str,
+                                     seed: int = 42, n_splits: int = 5,
+                                     repeats: int = 3) -> Dict:
+    """
+    运行 subtype TD-rest 二分类 5-fold x 3 重算实验。
+
+    Args:
+        config: ExperimentConfig（提供 backbone / 训练超参）。
+        output_dir: 输出目录。
+        seed: 基础随机种子。
+        n_splits: fold 数。
+        repeats: 重复次数。
+
+    Returns:
+        summary 字典（同时写入 summary.json）。
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    set_seed(seed)
+
+    patients_all = load_and_filter_dataset(config.DATASET_JSON, 'pd_all')
+    subtype_patients = [p for p in patients_all
+                        if p['group'] == 'pd' and p.get('subtype') in SUBTYPE_MAP]
+    pid_to_patient = {p['patient_id']: p for p in subtype_patients}
+    records = [{'patient_id': p['patient_id'], 'subtype': p['subtype']}
+               for p in subtype_patients]
+
+    folds = build_patient_5x3_subtype_folds(records, seed=seed,
+                                            n_splits=n_splits, repeats=repeats)
+
+    print("=" * 60)
+    print("Subtype TD-rest 二分类公平重算 (5-fold x 3)")
+    print(f"subtype 患者数: {len(subtype_patients)} | "
+          f"backbone: {config.BACKBONE} | fold 总数: {len(folds)}")
+    print("=" * 60)
+
+    classifier = PDClassifier(config)
+    fold_results: List[Dict] = []
+    pred_rows: List[Dict] = []
+
+    for global_idx, fold in enumerate(folds, start=1):
+        repeat, fold_no = fold['repeat'], fold['fold']
+        train_patients = [pid_to_patient[pid] for pid in fold['train_patients_full']]
+        val_patients = [pid_to_patient[pid] for pid in fold['val_patients_full']]
+
+        print(f"\n--- repeat {repeat} fold {fold_no} "
+              f"({global_idx}/{len(folds)}) | "
+              f"train={len(train_patients)} val={len(val_patients)} ---")
+
+        # 任务: TD vs rest（全部 subtype 患者）
+        tdrest_model = _subtype_train_binary_subtask(
+            classifier, train_patients, val_patients,
+            'pd_subtype_tdrest', global_idx)
+        tdrest_pred, tdrest_prob = _subtype_infer_patient_level(
+            classifier, tdrest_model, val_patients)
+
+        rows = td_rest_rows(pid_to_patient, fold['val_patients_full'],
+                            tdrest_pred, tdrest_prob, repeat, fold_no)
+        fold_results.append(td_rest_fold(rows))
+        pred_rows.extend(rows)
+
+    return save_td_rest_results(output_dir, fold_results, pred_rows,
+                                n_splits, repeats, seed)

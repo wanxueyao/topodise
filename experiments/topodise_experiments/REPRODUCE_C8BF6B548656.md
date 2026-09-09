@@ -1,30 +1,28 @@
 # Reproducing the c8bf6b548656 Stage0/Stage1 checkpoint
 
-The dedicated entry point freezes the Stage0/Stage1 values recorded in
-`reproduction/_experiment_def.json`. It does not depend on the current batch
-experiment defaults and resolves all paths independently of the launch working
-directory.
+Edit the `EXPERIMENTS` configuration in each stage's `batch_experiments.py`.
+The defaults retain the recorded c8bf6b548656 recipe: 200 epochs for Stage0,
+80 epochs for Stage1, batch size 16 and 4 data workers. `main.py` implements
+training and receives the resolved configuration from the batch controller.
 
-From the `codes` directory:
+From `codes`:
 
 ```bash
-python -m experiments.topodise_experiments.reproduce_c8bf6b548656 \
-  --data-root datasets \
-  --output-dir results/reproduce_c8bf6b548656 \
-  --device cuda
+python -m experiments.topodise_experiments.stage0_corn1_pretrain.batch_experiments
+# Set config.parent_ckpt in Stage1's batch file to Stage0's actual ema_best.pt.
+python -m experiments.topodise_experiments.stage1_rscp_finetune.batch_experiments
 ```
 
-The fresh-run command refuses to reuse or overwrite an existing checkpoint.
-Pass `--resume` to continue a run; new checkpoints contain PyTorch CPU/CUDA RNG
-states so resumed epochs keep the same random streams.
+The batch file controls GPUs, experiment selection and output paths. Each run
+saves its configuration in the output directory. To resume a previous standalone
+stage, set `config.resume_ckpt` to its checkpoint. The combined TopoDiSE batch
+controller also supports automatic matching and resuming of earlier batches.
 
-Stage0 and Stage1 expose one `reproducibility` switch. It controls only whether
-each stage calls `torch.manual_seed(42)` during initialization. When disabled
-(CLI: `--no-reproducibility`), no seed is set and training uses the environment
-RNG state. Neither mode sets Python/NumPy seeds, cuDNN options, TF32/matmul
-precision, deterministic algorithms, or `CUBLAS_WORKSPACE_CONFIG`. Checkpoints
-always save PyTorch CPU/CUDA RNG states, which are restored when resuming
-regardless of this switch.
+Set `config.reproducibility=False` to disable the initialization call to
+`torch.manual_seed(42)`. This switch does not enable deterministic kernels or
+set Python/NumPy seeds. Checkpoints save and restore PyTorch CPU/CUDA RNG states.
+The stage entry points validate their input data and sample counts; they do not
+enforce the historical dataset SHA256 fingerprints.
 
 Reference facts recovered from the saved run:
 
@@ -51,6 +49,5 @@ the final hash and the epoch selected as best.
 
 For intentional ablations, the ordinary Stage configs remain configurable.
 Set `parent_encoder_weights="ema"` explicitly to test EMA initialization;
-enable AMP, channels-last, or fused AdamW only as separate experiments. The
-dedicated reproduction entry enables `reproducibility` by default; use
-`--no-reproducibility` for ordinary training without the fixed seed.
+enable AMP, channels-last, or fused AdamW only as separate experiments. The stage batch configurations enable `reproducibility` by default; set it
+to `False` for training without that initialization seed.

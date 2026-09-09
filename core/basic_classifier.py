@@ -30,7 +30,7 @@ from typing import Literal, Optional, Dict, Any
 from core.basic_models import SingleTaskModel, DualStreamSingleTaskModel, get_image_size
 from core.basic_trainer import (
     train_fold_single_task, evaluate, 
-    create_optimizer, create_scheduler, EarlyStopping, TrainerConfig
+    create_optimizer, create_scheduler, EarlyStopping
 )
 
 
@@ -70,7 +70,7 @@ class PDClassifierConfig:
     --------
     架构配置:
         ARCHITECTURE: 网络架构 ('single_stream'/'mixed_single_stream'/'dual_stream')
-        BACKBONE: 特征提取网络 ('resnet18'/'resnet34'/'densenet121'/'efficientnet')
+        BACKBONE: 特征提取网络 ('resnet18')
         PRETRAINED: 预训练模式 (True=完整预训练, False=随机初始化, 'Half'=半冻结)
     
     训练配置:
@@ -100,7 +100,7 @@ class PDClassifierConfig:
     """
     # 架构
     ARCHITECTURE: Literal['single_stream', 'mixed_single_stream', 'dual_stream'] = 'single_stream'
-    BACKBONE: Literal['resnet18', 'resnet34', 'densenet121', 'efficientnet'] = 'resnet18'
+    BACKBONE: Literal['resnet18'] = 'resnet18'
     PRETRAINED: Literal[True, False, 'Half'] = True
     
     # 训练

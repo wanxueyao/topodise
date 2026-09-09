@@ -166,4 +166,3 @@ def coral_loss(
 def coral_predict(logits: torch.Tensor) -> torch.Tensor:
     """Map CORAL cumulative logits [B, K-1] to ordinal class ranks [B] in [0, K-1]."""
     return (torch.sigmoid(logits) > 0.5).sum(dim=1)
-

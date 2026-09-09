@@ -12,7 +12,6 @@ dual_view_classifier.py - 双视角 CNN 分类器（高层封装）
 """
 
 import os
-import time
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 
@@ -23,19 +22,13 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, roc_auc_score
 from torchvision import transforms
 
-from core.basic_models import get_image_size, BACKBONE_CONFIG
-from core.light_models import LIGHT_BACKBONE_CONFIG
+from core.basic_models import get_image_size
 from .dual_view_dataset import DualViewDataset
-from .dual_view_model import DualViewModel, DUAL_VIEW_TASK_CONFIG
+from .dual_view_model import DualViewModel
 
 
 def _get_image_size(backbone: str, pretrained):
-    """兼容 light backbone（均使用 224 固定尺寸，不做 use_original 处理）。"""
-    if backbone in LIGHT_BACKBONE_CONFIG:
-        if pretrained is False:
-            return (None, None, True)
-        size = LIGHT_BACKBONE_CONFIG[backbone]['input_size']
-        return (size + 32, size, False)
+    """使用 ResNet18 对应的预处理尺寸。"""
     return get_image_size(backbone, pretrained)
 
 

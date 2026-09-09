@@ -12,7 +12,7 @@ U-Net 编码器
 import torch
 import torch.nn as nn
 from torchvision import models
-from typing import List, Tuple, Literal
+from typing import List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,6 @@ class UNetEncoder(nn.Module):
         
         # 处理输入通道
         if input_channels != 3:
-            original_conv = backbone.conv1
             backbone.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, 
                                        stride=2, padding=3, bias=False)
         
@@ -81,7 +80,6 @@ class UNetEncoder(nn.Module):
         
         # 处理输入通道
         if input_channels != 3:
-            original_conv = backbone.features[0][0]
             backbone.features[0][0] = nn.Conv2d(input_channels, 32, kernel_size=3,
                                                 stride=2, padding=1, bias=False)
         
@@ -157,41 +155,8 @@ class UNetEncoder(nn.Module):
         return self.feature_dims[-1]
 
 
-class ResNetEncoder(UNetEncoder):
-    """ResNet 编码器的便捷包装"""
-    
-    def __init__(self, depth: int = 50, pretrained: bool = True):
-        model_name = f'resnet{depth}'
-        super().__init__(encoder_type=model_name, pretrained=pretrained)
 
 
-class EfficientNetEncoder(UNetEncoder):
-    """EfficientNet 编码器的便捷包装"""
-    
-    def __init__(self, level: str = 'b4', pretrained: bool = True):
-        model_name = f'efficientnet_{level}'
-        super().__init__(encoder_type=model_name, pretrained=pretrained)
 
 
 # 测试代码
-if __name__ == '__main__':
-    import torch
-    
-    # 测试 ResNet50
-    encoder = ResNetEncoder(depth=50, pretrained=False)
-    x = torch.randn(2, 3, 256, 256)
-    features = encoder(x)
-    
-    print("ResNet50 编码器")
-    print(f"输入: {x.shape}")
-    for i, feat in enumerate(features):
-        print(f"特征{i}: {feat.shape}")
-    
-    # 测试 EfficientNet B4
-    encoder = EfficientNetEncoder(level='b4', pretrained=False)
-    features = encoder(x)
-    
-    print("\nEfficientNet B4 编码器")
-    print(f"输入: {x.shape}")
-    for i, feat in enumerate(features):
-        print(f"特征{i}: {feat.shape}")

@@ -14,11 +14,11 @@ Input -> Encoder -> Decoder -> [Branch A (分割), Branch B (分类)]
 
 import torch
 import torch.nn as nn
-from typing import Dict, List, Optional, Tuple, Literal
+from typing import Dict, List, Literal
 import logging
 
 from .encoder import UNetEncoder
-from .segmentation_branch import SegmentationBranch, SegmentationDecoder
+from .segmentation_branch import SegmentationBranch
 from .classification_branch import ClassificationBranch
 
 logger = logging.getLogger(__name__)
@@ -94,7 +94,7 @@ class UNetMultiTask(nn.Module):
             dropout_rate=dropout_rate
         )
         
-        logger.info(f"多任务模型构建完成")
+        logger.info("多任务模型构建完成")
         logger.info(f"  编码器: {encoder_type}")
         logger.info(f"  分类模式: {classification_mode}")
         logger.info(f"  MAE: {'启用' if mae_enabled else '禁用'}")
@@ -250,85 +250,3 @@ class UNetMultiTask(nn.Module):
             'classification_branch': count_params(self.classification_branch),
             'total': count_params(self),
         }
-
-
-class MTLBuilder:
-    """多任务学习模型构建工厂"""
-    
-    @staticmethod
-    def build_lightweight() -> UNetMultiTask:
-        """构建轻量级模型"""
-        return UNetMultiTask(
-            encoder_type='resnet18',
-            encoder_pretrained=True,
-            classification_mode='single_stream',
-            dropout_rate=0.3,
-        )
-    
-    @staticmethod
-    def build_standard() -> UNetMultiTask:
-        """构建标准模型"""
-        return UNetMultiTask(
-            encoder_type='resnet50',
-            encoder_pretrained=True,
-            classification_mode='dual_stream',
-            dropout_rate=0.5,
-        )
-    
-    @staticmethod
-    def build_large() -> UNetMultiTask:
-        """构建大规模模型"""
-        return UNetMultiTask(
-            encoder_type='efficientnet_b4',
-            encoder_pretrained=True,
-            classification_mode='dual_stream',
-            dropout_rate=0.6,
-        )
-    
-    @staticmethod
-    def build_custom(config) -> UNetMultiTask:
-        """根据配置构建模型"""
-        return UNetMultiTask(
-            encoder_type=config.encoder_type,
-            encoder_pretrained=config.encoder_pretrained,
-            classification_mode=config.classification_mode,
-            num_pd_classes=2,
-            num_stage_classes=5,
-            num_subtype_classes=config.num_pd_subtypes,
-            mae_enabled=True,
-            dropout_rate=0.5,
-        )
-
-
-if __name__ == '__main__':
-    # 测试模型
-    model = UNetMultiTask(
-        encoder_type='resnet50',
-        encoder_pretrained=False,  # 测试用
-        classification_mode='dual_stream'
-    )
-    
-    # 打印模型参数
-    params = model.count_parameters()
-    print("模型参数数量:")
-    for key, val in params.items():
-        print(f"  {key}: {val:,}")
-    
-    # 前向传播测试
-    B, C, H, W = 2, 3, 256, 256
-    images = torch.randn(B, C, H, W)
-    
-    # 训练模式
-    outputs = model(images, training=True, use_mae=True)
-    print("\n训练模式输出:")
-    print(f"  分割: {outputs['segmentation'].shape}")
-    print(f"  PD分类: {outputs['pd_logits'].shape}")
-    print(f"  HY分级: {outputs['stage_logits'].shape}")
-    print(f"  亚型分类: {outputs['subtype_logits'].shape}")
-    
-    # 推理模式
-    seg = model.get_segmentation(images)
-    print(f"\n推理模式分割: {seg.shape}")
-    
-    cls = model.get_classification(images)
-    print(f"推理模式分类: PD={cls['pd_logits'].shape}")

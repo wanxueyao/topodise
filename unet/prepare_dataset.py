@@ -19,7 +19,6 @@ Usage:
 
 import argparse
 import json
-import shutil
 from pathlib import Path
 
 import nibabel as nib
@@ -28,11 +27,11 @@ from PIL import Image
 from tqdm import tqdm
 
 import sys
-sys.path.insert(0, str(Path(__file__).parent))
-from config import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from unet.config import (
     CHANNEL_NAMES, DATASET_ID, DATASET_NAME,
     IMAGE_TEST, IMAGE_TRAIN, IMAGE_VAL,
-    LABEL_TEST, LABEL_TRAIN, LABEL_VAL,
+    LABEL_TRAIN, LABEL_VAL,
     LABELS, NNUNET_RAW, PIXEL_SPACING,
 )
 
@@ -158,7 +157,7 @@ def prepare(include_val_in_train: bool = True) -> None:
 
     build_dataset_json(dataset_dir, training_cases, test_cases)
 
-    print(f"\n[Summary]")
+    print("\n[Summary]")
     print(f"  Training cases : {len(training_cases)}")
     print(f"  Test cases     : {len(test_cases)}")
     print(f"  Dataset dir    : {dataset_dir}")

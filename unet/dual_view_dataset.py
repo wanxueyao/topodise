@@ -16,12 +16,10 @@ dual_view_dataset.py - 双视角图像数据集
 """
 
 import os
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Tuple
 from PIL import Image
 
-import torch
 from torch.utils.data import Dataset
-from torchvision import transforms as T
 
 
 class DualViewDataset(Dataset):

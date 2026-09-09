@@ -42,8 +42,8 @@ import nibabel as nib
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).parent))
-from config import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from unet.config import (
     DATASET_NAME, NNUNET_CONFIG,
     NNUNET_PREPROCESSED, NNUNET_RAW, NNUNET_RESULTS,
     PIXEL_SPACING,
@@ -336,12 +336,6 @@ def predict_folder(
 # Utilities
 # --------------------------------------------------------------------------- #
 
-def _cuda_available() -> bool:
-    try:
-        import torch
-        return torch.cuda.is_available()
-    except ImportError:
-        return False
 
 
 def _get_torch_device():

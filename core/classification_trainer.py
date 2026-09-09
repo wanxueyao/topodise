@@ -1,78 +1,15 @@
-"""
-light_trainer.py - 轻量化模型训练模块
-
-模块职责
---------
-为轻量化骨干网络提供训练和评估功能，在 basic_trainer 基础上扩展:
-- 支持序数回归损失 (OrdinalRegressionLoss)
-- 支持 Label Smoothing CrossEntropy
-- 兼容标准流程 (train_epoch / evaluate / train_fold_single_task 同接口)
-- DropPath / StochasticDepth 通过 timm 模型内置支持
-
-主要函数
---------
-- light_train_epoch: 支持序数/CE 的单 epoch 训练
-- light_evaluate: 支持序数/CE 的评估
-- light_train_fold: 训练完整一个 fold
-- create_light_criterion: 根据任务和配置选择损失函数
-- create_light_optimizer: 支持差异化学习率
-- create_light_scheduler: 学习率调度器
-
-主要类
-------
-- LightTrainerConfig: 训练器配置
-- EarlyStopping: 早停机制 (同 basic_trainer，重新导出)
-"""
+"""Shared classification losses, optimizers, scheduling and training loops."""
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-from typing import Dict, Any, Optional, Literal
+from typing import Dict, Any, Optional
 
-from core.light_models import OrdinalRegressionLoss
+from core.classification_losses import OrdinalRegressionLoss
 
 
 # ==================== 配置类 ====================
 
-class LightTrainerConfig:
-    """
-    轻量化训练器配置
-
-    相比 TrainerConfig 新增:
-        DROPOUT: 特征层 Dropout 概率 (建议 0.3~0.5)
-        LOSS_TYPE: 损失函数类型
-            - 'ce': 标准 CrossEntropy
-            - 'label_smooth': Label Smoothing CrossEntropy（推荐用于 Stage）
-            - 'ordinal': 序数回归损失（推荐用于 Stage）
-        LABEL_SMOOTH_EPS: Label Smoothing epsilon (仅 label_smooth 时有效)
-    """
-    # 正则化
-    DROPOUT: float = 0.4
-
-    # 损失函数: 'ce' | 'label_smooth' | 'ordinal'
-    LOSS_TYPE: str = 'ce'
-    LABEL_SMOOTH_EPS: float = 0.1
-
-    # 学习率调度
-    LR_SCHEDULER: str = 'cosine'
-    LR_STEP_SIZE: int = 10
-    LR_GAMMA: float = 0.5
-
-    # 优化器
-    OPTIMIZER: str = 'adamw'   # 'adam' | 'adamw'
-    WEIGHT_DECAY: float = 1e-4
-
-    # 早停
-    EARLY_STOPPING: bool = True
-    PATIENCE: int = 10
-
-    # 差异化学习率
-    BACKBONE_LR_RATIO: float = 0.1
-
-    # VanillaNet 激活函数逐步线性化调度
-    # act_num 从此初始值线性递减到 0，训练结束时激活函数近似线性
-    VANILLANET_INIT_ACT_NUM: int = 3
 
 
 # ==================== 早停 ====================
@@ -110,7 +47,7 @@ class EarlyStopping:
 
 # ==================== 损失函数工厂 ====================
 
-def create_light_criterion(task: str, num_classes: int,
+def create_classification_criterion(task: str, num_classes: int,
                            loss_type: str = 'ce',
                            label_smooth_eps: float = 0.1,
                            device: str = 'cpu') -> nn.Module:
@@ -148,7 +85,7 @@ def create_light_criterion(task: str, num_classes: int,
 
 # ==================== 优化器 ====================
 
-def create_light_optimizer(model: nn.Module, base_lr: float,
+def create_classification_optimizer(model: nn.Module, base_lr: float,
                            weight_decay: float = 1e-4,
                            backbone_lr_ratio: float = 0.1,
                            optimizer_type: str = 'adamw') -> torch.optim.Optimizer:
@@ -198,7 +135,7 @@ def create_light_optimizer(model: nn.Module, base_lr: float,
 
 # ==================== 学习率调度器 ====================
 
-def create_light_scheduler(optimizer: torch.optim.Optimizer,
+def create_classification_scheduler(optimizer: torch.optim.Optimizer,
                            scheduler_type: str,
                            num_epochs: int,
                            step_size: int = 10,
@@ -233,38 +170,7 @@ def create_light_scheduler(optimizer: torch.optim.Optimizer,
         return None
 
 
-# ==================== VanillaNet 激活函数调度 ====================
 
-def schedule_vanillanet_act_num(epoch: int, total_epochs: int,
-                                init_act_num: int = 3) -> int:
-    """
-    VanillaNet 激活分支数线性递减调度
-
-    训练策略：激活函数从非线性逐步变为线性 (VanillaNet 论文 §3.2)
-    - 开始：act_num = init_act_num（多 BN 分支，表达力强，梯度充足）
-    - 结尾：act_num = 0（仅线性基础分支，模型收敛到极简形态）
-    - 方式：分步附线性递减，每阶段降 1
-
-    示例（init=3, total=60）：
-      epoch  0-14 → act_num=3
-      epoch 15-29 → act_num=2
-      epoch 30-44 → act_num=1
-      epoch 45-59 → act_num=0
-
-    Args:
-        epoch: 当前 epoch（0-indexed）
-        total_epochs: 总 epoch 数
-        init_act_num: 初始 act_num（通常为 3，与 VanillaNet5 默认一致）
-
-    Returns:
-        当前 epoch 应使用的 act_num
-    """
-    if total_epochs <= 1 or init_act_num <= 0:
-        return 0
-    # 将 total_epochs 等分成 (init_act_num+1) 段，每跨一段 act_num 降 1
-    # 公式保证: epoch 0 → init_act_num, 最后 1/4 → 0，各段等长
-    step = int(epoch * (init_act_num + 1) / total_epochs)
-    return max(0, init_act_num - step)
 
 
 # ==================== 核心训练函数 ====================
@@ -341,7 +247,7 @@ def _get_preds_and_probs(model_output: torch.Tensor,
     return preds.cpu().numpy(), probs.cpu().numpy()
 
 
-def light_train_epoch(model: nn.Module, dataloader, criterion,
+def classification_train_epoch(model: nn.Module, dataloader, criterion,
                       optimizer, device: str, label_key: str) -> tuple:
     """
     训练单个 epoch (支持序数回归和标准 CE)
@@ -394,7 +300,7 @@ def light_train_epoch(model: nn.Module, dataloader, criterion,
     return total_loss / valid_batches, accuracy_score(all_labels, all_preds)
 
 
-def light_evaluate(model: nn.Module, dataloader, criterion,
+def classification_evaluate(model: nn.Module, dataloader, criterion,
                    device: str, label_key: str) -> tuple:
     """
     评估模型 (支持序数回归和标准 CE)
@@ -458,11 +364,10 @@ def _empty_result() -> Dict[str, Any]:
     }
 
 
-def light_train_fold(
+def classification_train_fold(
     train_loader, val_loader, model: nn.Module, criterion, optimizer,
     num_epochs: int, device: str, task_name: str, fold_idx: int, label_key: str,
     scheduler=None, early_stopping: Optional[EarlyStopping] = None,
-    vanillanet_act_num_init: int = 3,
 ) -> Dict[str, Any]:
     """
     训练一个完整的 fold (轻量化版本)
@@ -494,21 +399,14 @@ def light_train_fold(
     best_acc, best_state = 0.0, None
 
     for epoch in range(num_epochs):
-        # VanillaNet 激活函数逐步线性化调度
-        # 其他 backbone 没有 set_act_num 方法，此判断会静默跳过
-        if hasattr(model, 'set_act_num'):
-            current_act = schedule_vanillanet_act_num(
-                epoch, num_epochs, vanillanet_act_num_init
-            )
-            model.set_act_num(current_act)
 
-        train_loss, train_acc = light_train_epoch(
+        train_loss, train_acc = classification_train_epoch(
             model, train_loader, criterion, optimizer, device, label_key
         )
         history['train_loss'].append(train_loss)
         history['train_acc'].append(train_acc)
 
-        val_loss, val_result = light_evaluate(
+        val_loss, val_result = classification_evaluate(
             model, val_loader, criterion, device, label_key
         )
         history['val_loss'].append(val_loss)

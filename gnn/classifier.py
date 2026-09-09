@@ -20,7 +20,6 @@ from .trainer import (
     GNNTrainerConfig,
     train_epoch,
     evaluate,
-    batch_to_device,
 )
 from .graph_dataset import NerveGraphDataset, collate_fn
 
@@ -33,7 +32,7 @@ logger = logging.getLogger(__name__)
 class GNNClassifierConfig:
     """GNN 分类器的全部超参数。"""
     # 模型结构
-    gnn_type: str = 'gat'           # 'gat' | 'graphsage'
+    gnn_type: str = 'gat'           # 'gat'
     hidden_dim: int = 64
     num_layers: int = 2
     num_heads: int = 4              # GAT 专用

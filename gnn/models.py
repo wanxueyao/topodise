@@ -1,17 +1,4 @@
-"""
-models.py - GNN 多任务分类模型
-
-实现两种 GNN 骨干网络（无需 PyTorch Geometric，仅依赖 PyTorch）:
-  - GAT        (Graph Attention Network, Veličković et al. 2018)
-  - GraphSAGE  (Hamilton et al. 2017)，均值聚合
-
-整体架构 (双流):
-  central 图 → GNNEncoder → central_emb  ─┐
-                                           ├─ concat → 任务头 (PD / stage / subtype)
-  whorl 图   → GNNEncoder → whorl_emb   ─┘
-
-消息传递通过 scatter_add_ 实现，支持可变大小批图（GraphBatch）。
-"""
+"""Pure PyTorch GAT layers and graph classification for the paper GNN recipes."""
 
 import torch
 import torch.nn as nn
@@ -173,63 +160,7 @@ class GATLayer(nn.Module):
         return out.mean(dim=1)   # [N, D]  取头均值
 
 
-# ─── GraphSAGE 层 ─────────────────────────────────────────────────────────────
 
-class GraphSAGELayer(nn.Module):
-    """
-    单层 GraphSAGE，均值聚合器 (mean aggregator)。
-
-    h_i' = ReLU(W * concat(h_i, mean_{j ∈ N(i)}(h_j)))
-
-    Args:
-        in_dim:    输入维度
-        out_dim:   输出维度
-        dropout:   dropout 比率
-        normalize: 是否对输出进行 L2 归一化
-    """
-
-    def __init__(
-        self,
-        in_dim: int,
-        out_dim: int,
-        dropout: float = 0.1,
-        normalize: bool = True,
-    ):
-        super().__init__()
-        self.linear = nn.Linear(in_dim * 2, out_dim)
-        self.dropout = nn.Dropout(dropout)
-        self.normalize = normalize
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        edge_index: torch.Tensor,
-        edge_attr: Optional[torch.Tensor] = None,  # 保留接口，GraphSAGE 不使用
-    ) -> torch.Tensor:
-        """
-        Args:
-            x:          [N, in_dim]
-            edge_index: [2, E]
-
-        Returns:
-            [N, out_dim]
-        """
-        N = x.size(0)
-
-        if edge_index.size(1) > 0:
-            src_idx, dst_idx = edge_index[0], edge_index[1]
-            agg = scatter_mean(x[src_idx], dst_idx, N)  # [N, in_dim]
-        else:
-            agg = torch.zeros_like(x)
-
-        h = torch.cat([x, agg], dim=-1)          # [N, 2*in_dim]
-        out = F.relu(self.linear(h))
-        out = self.dropout(out)
-
-        if self.normalize:
-            out = F.normalize(out, p=2, dim=-1)
-
-        return out
 
 
 # ─── GNN 编码器 ───────────────────────────────────────────────────────────────
@@ -246,7 +177,7 @@ class GNNEncoder(nn.Module):
         edge_feat_dim: 边特征维度 (默认 EDGE_FEAT_DIM)
         hidden_dim:    隐藏层维度
         num_layers:    GNN 层数
-        gnn_type:      'gat' 或 'graphsage'
+        gnn_type:      'gat'
         num_heads:     注意力头数 (GAT 专用)
         dropout:       dropout 比率
     """
@@ -276,24 +207,15 @@ class GNNEncoder(nn.Module):
         # GNN 层
         gnn_layers = []
         for _ in range(num_layers):
-            if gnn_type == 'gat':
-                gnn_layers.append(GATLayer(
-                    in_dim=hidden_dim,
-                    out_dim=hidden_dim,
-                    num_heads=num_heads,
-                    dropout=dropout,
-                    edge_dim=edge_feat_dim,
-                ))
-            elif gnn_type == 'graphsage':
-                gnn_layers.append(GraphSAGELayer(
-                    in_dim=hidden_dim,
-                    out_dim=hidden_dim,
-                    dropout=dropout,
-                ))
-            else:
-                raise ValueError(
-                    f"未知 gnn_type: {gnn_type!r}，可选值: 'gat', 'graphsage'"
-                )
+            if gnn_type != "gat":
+                raise ValueError("Paper GNN recipes require gnn_type=gat")
+            gnn_layers.append(GATLayer(
+                in_dim=hidden_dim,
+                out_dim=hidden_dim,
+                num_heads=num_heads,
+                dropout=dropout,
+                edge_dim=edge_feat_dim,
+            ))
         self.gnn_layers = nn.ModuleList(gnn_layers)
 
         # 输出归一化
@@ -344,7 +266,7 @@ class GNNMultiTaskModel(nn.Module):
         edge_feat_dim:      边特征维度
         hidden_dim:         隐藏层维度
         num_layers:         GNN 层数
-        gnn_type:           'gat' 或 'graphsage'
+        gnn_type:           'gat'
         num_heads:          注意力头数 (GAT 专用)
         dropout:            GNN dropout
         classifier_dropout: 分类头 dropout

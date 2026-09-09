@@ -3,11 +3,19 @@
 损失：L = lambda_simple * ||eps - eps_hat||^2 + lambda_topo * BCE(psi(z), targets)。
 烟雾测试模式的拓扑目标为随机二值图，用作 Frangi 缓存的占位数据。
 """
+
+if __name__ == '__main__':
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from experiments._execution import single_main
+    single_main('experiments.topodise_experiments.stage0_corn1_pretrain.main')
+    raise SystemExit(0)
+
 import os
 import sys
 import json
 import time
-import argparse
 from dataclasses import asdict
 from contextlib import nullcontext
 
@@ -38,7 +46,7 @@ from topodise.reproducibility import (
     configure_reproducibility,
     restore_rng_state,
 )
-from .config import Stage0Config
+from experiments._stage_configs import Stage0Config
 
 
 def _pick_device(dev: str) -> torch.device:
@@ -439,38 +447,10 @@ def run_single_experiment(cfg: Stage0Config) -> dict:
     }
 
 
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--corn1-root", default=None)
-    p.add_argument("--epochs", type=int, default=None)
-    p.add_argument("--batch-size", type=int, default=None)
-    p.add_argument("--image-size", type=int, default=None)
-    p.add_argument("--run-name", default=None)
-    p.add_argument("--output-dir", default=None)
-    p.add_argument("--smoke", action="store_true")
-    p.add_argument("--device", default=None)
-    return p.parse_args()
-
-
-if __name__ == "__main__":
-    args = parse_args()
-    cfg = Stage0Config()
-    if args.smoke:
-        cfg.epochs = 1
-        cfg.batch_size = 2
-        cfg.image_size = 64
-        cfg.encoder_base_channels = 16
-        cfg.encoder_channel_mult = (1, 2, 2, 2)
-        cfg.encoder_blocks_per_stage = (1, 1, 1, 1)
-        cfg.unet_model_channels = 16
-        cfg.unet_channel_mult = (1, 2, 2)
-        cfg.z_dim = 64
-        cfg.T = 50
-        cfg.num_workers = 0
-        cfg.run_name = "smoke_stage0"
-    for k in ("corn1_root", "epochs", "batch_size", "image_size", "run_name", "output_dir", "device"):
-        v = getattr(args, k)
-        if v is not None:
-            setattr(cfg, k, v)
-    out = run_single_experiment(cfg)
-    print(json.dumps(out, indent=2))
+def run_paper_experiment(exp, output_dir, device='cpu', num_workers=4):
+    """Execute one stage with all parameters supplied by batch_experiments.py."""
+    cfg = Stage0Config(**exp['config'])
+    cfg.output_dir = output_dir
+    cfg.device = device
+    cfg.num_workers = num_workers
+    return run_single_experiment(cfg)

@@ -38,27 +38,6 @@ def subtype_pigd_mixed_label(y3: int) -> Optional[int]:
     return None
 
 
-def make_subtype_binary_labels(records: List[Dict], task: str) -> List[Optional[int]]:
-    """
-    为一组患者记录生成指定子任务的二分类标签。
-
-    Args:
-        records: 患者记录列表，每个元素需含 'subtype3' (0/1/2) 或 'subtype' 字符串。
-        task: 'pd_subtype_tdrest' 或 'pd_subtype_pigd_mixed'。
-
-    Returns:
-        与 records 等长的标签列表；pigd_mixed 任务中 TD 患者对应 None。
-    """
-    labels: List[Optional[int]] = []
-    for rec in records:
-        y3 = _record_subtype3(rec)
-        if task == 'pd_subtype_tdrest':
-            labels.append(subtype_tdrest_label(y3))
-        elif task == 'pd_subtype_pigd_mixed':
-            labels.append(subtype_pigd_mixed_label(y3))
-        else:
-            raise ValueError(f"未知子任务: {task}")
-    return labels
 
 
 def _record_subtype3(rec: Dict) -> int:

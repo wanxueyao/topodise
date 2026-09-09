@@ -31,8 +31,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).parent))
-from config import LABEL_TEST
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from unet.config import LABEL_TEST
 
 
 # --------------------------------------------------------------------------- #

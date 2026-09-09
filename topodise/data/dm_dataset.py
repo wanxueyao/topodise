@@ -18,7 +18,6 @@ import json
 import random
 from typing import List, Optional, Callable, Literal, Tuple, Dict
 
-from PIL import Image
 from torch.utils.data import Dataset
 
 from .downstream_dataset import _load_gray

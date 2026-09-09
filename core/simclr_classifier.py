@@ -1,37 +1,4 @@
-"""
-simclr_classifier.py - SimCLR 增强的轻量化分类器
-
-工作流程
---------
-第一阶段 (SimCLR 自监督预训练):
-    - 对训练集所有图像生成双视图，不使用标签
-    - 通过 NT-Xent 对比损失训练 backbone + 投影头
-    - backbone 学习视角不变的视觉表征
-
-第二阶段 (有监督微调):
-    - 丢弃投影头，保留预训练 backbone 权重
-    - 添加分类头，使用标签数据训练
-    - 微调阶段不使用额外图像增强（SimCLR 已完成表征学习）
-
-对比 LightClassifier 的差异
---------------------------
-- 无 DATA_AUGMENTATION / AUG_* 配置参数
-- 增加 SIMCLR_* 预训练专属配置
-- 微调阶段训练集与验证集使用相同的纯净变换（仅 Resize + Normalize）
-
-支持 backbone
--------------
-- mobilevit_xxs, mobilevit_xs, vanillanet_5, efficientnet_b0
-（与 LightClassifier 相同）
-
-使用示例
---------
->>> config = SimCLRClassifierConfig()
->>> config.BACKBONE = 'mobilevit_xxs'
->>> config.SIMCLR_EPOCHS = 100
->>> classifier = SimCLRClassifier(config)
->>> result = classifier.train(train_dataset, val_dataset, task='pd')
-"""
+"""ResNet18 SimCLR pretraining and downstream patient-level classification."""
 import os
 import json
 import time
@@ -42,30 +9,23 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from typing import Literal, Optional, Dict, Any
 
-from core.light_models import (
-    LightSingleTaskModel,
-    LightDualStreamModel,
-    get_image_size_light,
-    LIGHT_BACKBONE_CONFIG,
-)
 from core.basic_models import (
     SingleTaskModel,
     DualStreamSingleTaskModel,
     get_image_size as get_image_size_basic,
     BACKBONE_CONFIG,
 )
-from core.light_trainer import (
+from core.classification_trainer import (
     EarlyStopping,
-    create_light_criterion,
-    create_light_optimizer,
-    create_light_scheduler,
-    light_train_fold,
-    light_evaluate,
+    create_classification_criterion,
+    create_classification_optimizer,
+    create_classification_scheduler,
+    classification_train_fold,
+    classification_evaluate,
 )
 from core.simclr_trainer import SimCLRModel, simclr_pretrain
 
 
-_BASIC_BACKBONE_NAMES = {'densenet121', 'resnet18', 'resnet34', 'efficientnet'}
 
 
 class _ImagePathPretrainDataset:
@@ -100,53 +60,10 @@ TASK_CONFIG = {
 # ==================== 配置类 ====================
 
 class SimCLRClassifierConfig:
-    """
-    SimCLR 分类器配置
-
-    架构配置
-    --------
-    ARCHITECTURE: 网络架构
-        - 'single_stream': 单张图像输入
-        - 'mixed_single_stream': 混合所有区域单流训练
-        - 'dual_stream': 双张图像输入（central + whorl）
-    BACKBONE: 轻量化骨干网络
-        - 'mobilevit_xxs': ~1.3M 参数
-        - 'mobilevit_xs': ~2.3M 参数
-        - 'vanillanet_5': ~22M 参数
-        - 'efficientnet_b0': ~5.3M 参数（推荐首选）
-    PRETRAINED: ImageNet 预训练模式 (True / False / 'Half')
-    DROPOUT: 特征层 Dropout 概率
-
-    SimCLR 预训练配置
-    ----------------
-    SIMCLR_EPOCHS: 自监督预训练轮数（推荐 50~200）
-    SIMCLR_LR: 预训练学习率（推荐 1e-3）
-    SIMCLR_BATCH_SIZE: 预训练 batch 大小（SimCLR 大 batch 效果好，推荐 ≥32）
-    SIMCLR_TEMPERATURE: NT-Xent 温度系数（推荐 0.3~0.7）
-    SIMCLR_PROJ_DIM: 投影头输出维度（128）
-    SIMCLR_PROJ_HIDDEN_DIM: 投影头隐层维度（256）
-    SIMCLR_WEIGHT_DECAY: 预训练权重衰减
-
-    损失函数配置
-    ------------
-    PD_LOSS_TYPE: PD 任务损失 ('ce' / 'label_smooth')
-    STAGE_LOSS_TYPE: Stage 任务损失 ('ce' / 'label_smooth' / 'ordinal')
-    SUBTYPE_LOSS_TYPE: Subtype 任务损失 ('ce' / 'label_smooth')
-    LABEL_SMOOTH_EPS: Label Smoothing epsilon
-
-    微调训练配置
-    ------------
-    BATCH_SIZE, NUM_EPOCHS, LEARNING_RATE, WEIGHT_DECAY
-    LR_SCHEDULER: 'warmup_cosine' / 'cosine' / 'step'
-    BACKBONE_LR_RATIO: backbone 差异化学习率倍率（微调时 backbone 用更小 LR）
-    EARLY_STOPPING, PATIENCE: 早停配置
-
-    注意: 无 DATA_AUGMENTATION / AUG_* 参数，SimCLR 内部处理增强。
-    微调阶段训练集不使用额外增强。
-    """
+    """ResNet18 SimCLR pretraining and classification configuration."""
     # ========== 架构 ==========
     ARCHITECTURE: Literal['single_stream', 'mixed_single_stream', 'dual_stream'] = 'single_stream'
-    BACKBONE: Literal['mobilevit_xxs', 'mobilevit_xs', 'vanillanet_5', 'efficientnet_b0', 'densenet121', 'resnet18'] = 'densenet121'
+    BACKBONE: Literal['resnet18'] = 'resnet18'
     PRETRAINED: Literal[True, False, 'Half'] = True
     DROPOUT: float = 0.4
 
@@ -192,8 +109,6 @@ class SimCLRClassifierConfig:
     EARLY_STOPPING: bool = True
     PATIENCE: int = 15
 
-    # ========== VanillaNet ==========
-    VANILLANET_INIT_ACT_NUM: int = 3
 
     # ========== 交叉验证 ==========
     NUM_FOLDS: int = 5
@@ -245,14 +160,9 @@ class SimCLRClassifier:
         仅做 Resize → CenterCrop → ToTensor → Normalize。
         SimCLR 预训练已通过对比增强学习了鲁棒表征。
         """
-        if self.config.BACKBONE in _BASIC_BACKBONE_NAMES:
-            resize, crop, use_original = get_image_size_basic(
-                self.config.BACKBONE, self.config.PRETRAINED
-            )
-        else:
-            resize, crop, use_original = get_image_size_light(
-                self.config.BACKBONE, self.config.PRETRAINED
-            )
+        resize, crop, use_original = get_image_size_basic(
+            self.config.BACKBONE, self.config.PRETRAINED
+        )
         normalize = transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
         base = [] if use_original else [
@@ -278,9 +188,7 @@ class SimCLRClassifier:
 
     def _get_input_size(self) -> int:
         """获取 backbone 推荐输入尺寸"""
-        if self.config.BACKBONE in _BASIC_BACKBONE_NAMES:
-            return BACKBONE_CONFIG[self.config.BACKBONE]['input_size']
-        return LIGHT_BACKBONE_CONFIG[self.config.BACKBONE]['input_size']
+        return BACKBONE_CONFIG[self.config.BACKBONE]['input_size']
 
     def _create_model_from_simclr(
         self, task: str, simclr_model: SimCLRModel
@@ -301,45 +209,23 @@ class SimCLRClassifier:
         cfg = self.config
         task_cfg = TASK_CONFIG[task]
         num_classes = task_cfg['num_classes']
-        loss_type = self._get_loss_type(task)
-        use_ordinal = (loss_type == 'ordinal' and task == 'stage')
 
         pretrained_backbone_state = simclr_model.get_backbone().state_dict()
 
-        if cfg.BACKBONE in _BASIC_BACKBONE_NAMES:
-            if cfg.ARCHITECTURE == 'dual_stream':
-                model = DualStreamSingleTaskModel(
-                    cfg.BACKBONE, num_classes,
-                    pretrained=False,   # 不重新加载 ImageNet 权重
-                )
-                # 两路 backbone 均使用 SimCLR 预训练权重初始化
-                model.backbone_central.load_state_dict(pretrained_backbone_state)
-                model.backbone_whorl.load_state_dict(pretrained_backbone_state)
-            else:
-                model = SingleTaskModel(
-                    cfg.BACKBONE, num_classes,
-                    pretrained=False,
-                )
-                model.backbone.load_state_dict(pretrained_backbone_state)
+        if cfg.ARCHITECTURE == 'dual_stream':
+            model = DualStreamSingleTaskModel(
+                cfg.BACKBONE, num_classes,
+                pretrained=False,   # 不重新加载 ImageNet 权重
+            )
+            # 两路 backbone 均使用 SimCLR 预训练权重初始化
+            model.backbone_central.load_state_dict(pretrained_backbone_state)
+            model.backbone_whorl.load_state_dict(pretrained_backbone_state)
         else:
-            if cfg.ARCHITECTURE == 'dual_stream':
-                model = LightDualStreamModel(
-                    cfg.BACKBONE, num_classes,
-                    pretrained=False,   # 不重新加载 ImageNet 权重
-                    dropout=cfg.DROPOUT,
-                    use_ordinal=use_ordinal,
-                )
-                # 两路 backbone 均使用 SimCLR 预训练权重初始化
-                model.backbone_central.load_state_dict(pretrained_backbone_state)
-                model.backbone_whorl.load_state_dict(pretrained_backbone_state)
-            else:
-                model = LightSingleTaskModel(
-                    cfg.BACKBONE, num_classes,
-                    pretrained=False,
-                    dropout=cfg.DROPOUT,
-                    use_ordinal=use_ordinal,
-                )
-                model.backbone.load_state_dict(pretrained_backbone_state)
+            model = SingleTaskModel(
+                cfg.BACKBONE, num_classes,
+                pretrained=False,
+            )
+            model.backbone.load_state_dict(pretrained_backbone_state)
 
         return model.to(cfg.DEVICE)
 
@@ -376,7 +262,6 @@ class SimCLRClassifier:
             weight_decay=cfg.SIMCLR_WEIGHT_DECAY,
             num_workers=cfg.NUM_WORKERS,
             input_size=self._get_input_size(),
-            vanillanet_act_num_init=cfg.VANILLANET_INIT_ACT_NUM,
             verbose=True,
         )
         if self._uses_shared_pretrain_source():
@@ -457,7 +342,6 @@ class SimCLRClassifier:
             weight_decay=cfg.SIMCLR_WEIGHT_DECAY,
             num_workers=cfg.NUM_WORKERS,
             input_size=self._get_input_size(),
-            vanillanet_act_num_init=cfg.VANILLANET_INIT_ACT_NUM,
             verbose=True,
         )
 
@@ -479,7 +363,6 @@ class SimCLRClassifier:
             'proj_hidden_dim': cfg.SIMCLR_PROJ_HIDDEN_DIM,
             'simclr_weight_decay': cfg.SIMCLR_WEIGHT_DECAY,
             'input_size': self._get_input_size(),
-            'vanillanet_act_num_init': cfg.VANILLANET_INIT_ACT_NUM,
             'corn1_root': os.path.abspath(self._resolve_existing_path(getattr(cfg, 'CORN1_ROOT', 'datasets/CORN-1'))),
             'corn1_splits': getattr(cfg, 'CORN1_PRETRAIN_SPLITS', 'train,val,test'),
         }
@@ -641,29 +524,28 @@ class SimCLRClassifier:
         # 从 SimCLR 预训练权重初始化分类模型
         model = self._create_model_from_simclr(task, simclr_model)
 
-        criterion = create_light_criterion(
+        criterion = create_classification_criterion(
             task, task_cfg['num_classes'], loss_type,
             cfg.LABEL_SMOOTH_EPS, cfg.DEVICE,
         )
-        optimizer = create_light_optimizer(
+        optimizer = create_classification_optimizer(
             model, cfg.LEARNING_RATE, cfg.WEIGHT_DECAY,
             cfg.BACKBONE_LR_RATIO, cfg.OPTIMIZER,
         )
-        scheduler = create_light_scheduler(
+        scheduler = create_classification_scheduler(
             optimizer, cfg.LR_SCHEDULER, cfg.NUM_EPOCHS,
             cfg.LR_STEP_SIZE, cfg.LR_GAMMA,
         )
         early_stopping = EarlyStopping(patience=cfg.PATIENCE) if cfg.EARLY_STOPPING else None
 
-        history = light_train_fold(
+        history = classification_train_fold(
             train_loader, val_loader, model, criterion, optimizer,
             cfg.NUM_EPOCHS, cfg.DEVICE,
             task_cfg['name'] + suffix, fold_idx, task_cfg['label_key'],
             scheduler=scheduler, early_stopping=early_stopping,
-            vanillanet_act_num_init=cfg.VANILLANET_INIT_ACT_NUM,
         )
 
-        _, val_result = light_evaluate(
+        _, val_result = classification_evaluate(
             model, val_loader, criterion, cfg.DEVICE, task_cfg['label_key'],
         )
 

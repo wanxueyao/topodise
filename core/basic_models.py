@@ -1,36 +1,7 @@
-"""
-basic_models.py - 神经网络模型定义
-
-模块职责
---------
-定义帕金森病分类任务的神经网络模型，包括:
-- Backbone 管理: 创建和配置特征提取网络
-- 模型类: 单流和双流分类模型
-- 预训练支持: 完整预训练、随机初始化、半冻结
-
-支持的 Backbone
----------------
-- resnet18/resnet34: 512 维特征, 推荐输入 224×224
-- densenet121: 1024 维特征, 推荐输入 224×224
-- efficientnet (B4): 1792 维特征, 推荐输入 380×380
-
-预训练模式
-----------
-- True: 加载 ImageNet 预训练权重，所有层可训练
-- False: 随机初始化，从零训练
-- Half: 加载预训练权重，冻结低层特征提取器
-
-尺寸策略
---------
-- 迁移学习 (True/Half): 使用官方推荐尺寸
-- 从零训练 (False): 保留原始尺寸，利用 AdaptiveAvgPool
-"""
+"""ResNet18 backbones and single/dual-stream classifiers used by the paper recipes."""
 import torch
 import torch.nn as nn
-from torchvision.models import (
-    resnet18, resnet34, densenet121, efficientnet_b4,
-    ResNet18_Weights, ResNet34_Weights, DenseNet121_Weights, EfficientNet_B4_Weights
-)
+from torchvision.models import resnet18, ResNet18_Weights
 from typing import Literal
 
 PretrainedMode = Literal[True, False, 'Half']
@@ -38,32 +9,7 @@ PretrainedMode = Literal[True, False, 'Half']
 
 # ==================== Backbone 配置表 ====================
 
-BACKBONE_CONFIG = {
-    'resnet18': {
-        'weights': ResNet18_Weights.IMAGENET1K_V1,
-        'feature_dim': 512,
-        'input_size': 224,
-        'freeze_layers': ['conv1', 'bn1', 'layer1', 'layer2'],
-    },
-    'resnet34': {
-        'weights': ResNet34_Weights.IMAGENET1K_V1,
-        'feature_dim': 512,
-        'input_size': 224,
-        'freeze_layers': ['conv1', 'bn1', 'layer1', 'layer2'],
-    },
-    'densenet121': {
-        'weights': DenseNet121_Weights.IMAGENET1K_V1,
-        'feature_dim': 1024,
-        'input_size': 224,
-        'freeze_count': 6,
-    },
-    'efficientnet': {
-        'weights': EfficientNet_B4_Weights.IMAGENET1K_V1,
-        'feature_dim': 1792,
-        'input_size': 380,
-        'freeze_count': 4,
-    },
-}
+BACKBONE_CONFIG = {'resnet18': {'weights': ResNet18_Weights.IMAGENET1K_V1, 'feature_dim': 512, 'input_size': 224, 'freeze_layers': ['conv1', 'bn1', 'layer1', 'layer2']}}
 """
 Backbone 配置表
 
@@ -115,28 +61,9 @@ def get_backbone_feature_dim(backbone: str) -> int:
 
 
 def _freeze_half(model: nn.Module, backbone: str):
-    """
-    冻结模型前半部分层 (内部函数)
-    
-    用于半冻结预训练模式，保留低层通用特征，只训练高层任务特征。
-    
-    Args:
-        model: 已加载权重的模型
-        backbone: backbone 名称
-    """
-    config = BACKBONE_CONFIG[backbone]
-    
-    if backbone in ['resnet18', 'resnet34']:
-        # ResNet: 冻结 conv1, bn1, layer1, layer2
-        for name in config['freeze_layers']:
-            for param in getattr(model, name).parameters():
-                param.requires_grad = False
-    else:
-        # DenseNet/EfficientNet: 冻结 features 的前 N 个模块
-        for i, module in enumerate(model.features):
-            if i < config['freeze_count']:
-                for param in module.parameters():
-                    param.requires_grad = False
+    for name in BACKBONE_CONFIG[backbone]['freeze_layers']:
+        for param in getattr(model, name).parameters():
+            param.requires_grad = False
 
 
 def get_backbone(backbone: str, pretrained: PretrainedMode = True) -> nn.Module:
@@ -146,7 +73,7 @@ def get_backbone(backbone: str, pretrained: PretrainedMode = True) -> nn.Module:
     加载指定的 CNN backbone，移除分类头，可选加载预训练权重。
     
     Args:
-        backbone: backbone 名称 ('resnet18'/'resnet34'/'densenet121'/'efficientnet')
+        backbone: backbone 名称 ('resnet18')
         pretrained: 预训练模式
             - True: 加载 ImageNet 权重
             - False: 随机初始化
@@ -166,18 +93,8 @@ def get_backbone(backbone: str, pretrained: PretrainedMode = True) -> nn.Module:
     weights = config['weights'] if pretrained else None
     
     # 创建模型并移除分类头
-    if backbone == 'resnet18':
-        model = resnet18(weights=weights)
-        model.fc = nn.Identity()
-    elif backbone == 'resnet34':
-        model = resnet34(weights=weights)
-        model.fc = nn.Identity()
-    elif backbone == 'densenet121':
-        model = densenet121(weights=weights)
-        model.classifier = nn.Identity()
-    elif backbone == 'efficientnet':
-        model = efficientnet_b4(weights=weights)
-        model.classifier = nn.Identity()
+    model = resnet18(weights=weights)
+    model.fc = nn.Identity()
     
     # 半冻结处理
     if pretrained == 'Half':

@@ -9,7 +9,7 @@ Steps performed (in order):
 The trained model is saved to:
     codes/unet/nnunet_data/nnUNet_results/Dataset001_Cornea/
         nnUNetTrainer__nnUNetPlans__2d/
-            fold_0/   (or fold_all/ when fold="all")
+            fold_0/ ... fold_4/   (when fold="all")
                 checkpoint_best.pth
                 checkpoint_final.pth
                 ...
@@ -49,10 +49,10 @@ FAST_EPOCH_TRAINERS = {
 DGX_SPARK_DEFAULT_FAST_EPOCHS = 250
 DGX_SPARK_DEFAULT_CPU_THREADS = 8
 
-sys.path.insert(0, str(Path(__file__).parent))
-from config import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from unet.config import (
     DATASET_ID, DATASET_NAME, FOLD,
-    NNUNET_BASE, NNUNET_PREPROCESSED, NNUNET_RAW, NNUNET_RESULTS,
+    NNUNET_PREPROCESSED, NNUNET_RAW, NNUNET_RESULTS,
     NNUNET_CONFIG,
 )
 
@@ -155,7 +155,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--profile",
-        default="dgx-spark",
+        default="baseline",
         choices=["dgx-spark", "baseline"],
         help=(
             "Runtime profile presets. 'dgx-spark' reuses existing preprocessing, "
@@ -250,7 +250,7 @@ def main() -> None:
         help="Disable checkpoint saving for speed benchmarking/debug (no resume/final checkpoints).",
     )
     parser.add_argument(
-        "--dry_run",
+        "--dry_run", "--dry-run",
         action="store_true",
         help="Print the effective nnUNet commands without executing them.",
     )
@@ -259,7 +259,7 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     # Validate environment
     # ------------------------------------------------------------------ #
-    if not check_dataset_prepared():
+    if not args.dry_run and not check_dataset_prepared():
         sys.exit(
             "[ERROR] Dataset not prepared.\n"
             "        Run  python prepare_dataset.py  first."
@@ -312,7 +312,7 @@ def main() -> None:
     fold_arg = args.fold
     if fold_arg == "all":
         folds_to_train = list(range(5))
-        print(f"[Step 2/2] Training all 5 folds …")
+        print("[Step 2/2] Training all 5 folds …")
     else:
         folds_to_train = [int(fold_arg)]
         print(f"[Step 2/2] Training fold {fold_arg} …")
@@ -329,6 +329,10 @@ def main() -> None:
             disable_checkpointing=args.disable_checkpointing,
             dry_run=args.dry_run,
         )
+
+    if args.dry_run:
+        print("\n[Done] Command preview complete; no training was executed.")
+        return
 
     print(
         "\n[Done] Training complete.\n"
