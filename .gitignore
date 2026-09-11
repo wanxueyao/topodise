@@ -11,6 +11,7 @@ __pycache__/
 .venv-dgxspark/
 .venv-unet/
 .venv-c8/
+.venv/
 .env
 .env.*
 !.env.example

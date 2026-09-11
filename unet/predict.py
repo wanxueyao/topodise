@@ -251,7 +251,7 @@ def predict_single(
         out_dir.mkdir()
         predictor.predict_from_files(
             [[str(in_nii)]],
-            [str(out_dir / f"{image_path.stem}.nii.gz")],
+            [str(out_dir / image_path.stem)],
             save_probabilities=False,
             overwrite=True,
             num_processes_preprocessing=1,
@@ -308,7 +308,7 @@ def predict_folder(
             nii_path = in_dir / f"{tif_path.stem}_0000.nii.gz"
             _tif_to_nifti(tif_path, nii_path)
             list_of_lists.append([str(nii_path)])
-            out_paths.append(str(out_dir / f"{tif_path.stem}.nii.gz"))
+            out_paths.append(str(out_dir / tif_path.stem))
 
         # Batch prediction
         predictor.predict_from_files(
@@ -321,8 +321,8 @@ def predict_folder(
         )
 
         # Convert NIfTI masks back to images
-        for tif_path, out_nii in zip(tif_files, out_paths):
-            mask = _nifti_to_mask(Path(out_nii))
+        for tif_path, out_prefix in zip(tif_files, out_paths):
+            mask = _nifti_to_mask(Path(out_prefix + ".nii.gz"))
             out_name = tif_path.stem + ("." + save_as)
             # Save mask: 0 → black, 1 → white (255)
             Image.fromarray((mask * 255).astype(np.uint8)).save(

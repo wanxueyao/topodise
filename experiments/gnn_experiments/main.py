@@ -395,13 +395,14 @@ def _subtype_build_dataset_with_patient_ids(
         subtype_by_pid = {p['patient_id']: p['subtype'] for p in patients}
         relabeled = []
         for sample, pid in zip(ds.samples, sample_pids):
-            c_path, w_path, pd_l, stage_l, _sub_l = sample
+            c_path, w_path, pd_l, stage_l, _sub_l, patient_id = sample
             relabeled.append((
                 c_path,
                 w_path,
                 pd_l,
                 stage_l,
                 _subtype_subtype_binary_label(subtype_by_pid[pid], task),
+                patient_id,
             ))
         ds.samples = relabeled
 
