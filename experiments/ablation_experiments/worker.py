@@ -102,6 +102,11 @@ def archive_incomplete(output, encoder, cfg):
 
 
 def run_stage2(job, device, retry_incomplete=False, max_folds=0):
+    if job.get("backend") == "full":
+        if max_folds:
+            raise ValueError("Full Stage2 must run complete configured folds")
+        from .full_stage2 import run_full_stage2
+        return run_full_stage2(job, device)
     from experiments.unified_stage2_encoder_comparison.config import load_config
     from experiments.unified_stage2_encoder_comparison.run_encoder import main as core_main
 

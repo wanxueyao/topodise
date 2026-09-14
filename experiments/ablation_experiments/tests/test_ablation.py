@@ -96,7 +96,7 @@ def test_mask_geometry_and_image_rng_are_shared(tmp_path):
 
 
 def test_plan_shares_three_parents_and_locks_one_stage2(tmp_path):
-    jobs = batch.build_plan(tmp_path, tmp_path, tmp_path, tmp_path / "pd.json", tmp_path / "manifest.json", [42])
+    jobs = batch.build_plan(tmp_path, tmp_path, tmp_path, tmp_path / "pd.json", tmp_path / "manifest.json", [42], backend="unified")
     assert [len(jobs[s]) for s in jobs] == [3, 6, 6]
     assert len({j["config"]["parent_ckpt"] for j in jobs["stage1"]}) == 3
     assert {j["config"]["topo_target"] for j in jobs["stage1"]} == {"hgrad_dual", "frangi"}
@@ -150,7 +150,7 @@ def test_all_six_train_and_feed_frozen_unified_stage2(tmp_path, monkeypatch):
         pairs.append({"subject_id": str(n), "central": paths[0], "whorl": paths[1], "is_paired": True})
     manifest = tmp_path / "manifest.json"
     write(manifest, pairs)
-    jobs = batch.build_plan(tmp_path / "results", tmp_path, corn, tmp_path / "pd.json", manifest, [42])
+    jobs = batch.build_plan(tmp_path / "results", tmp_path, corn, tmp_path / "pd.json", manifest, [42], backend="unified")
     for job in jobs["stage0"]:
         job["config"].update(epochs=1, batch_size=2, num_workers=0, expected_samples=4,
                              image_size=32, encoder_base_channels=8,
@@ -229,7 +229,7 @@ def test_stage1_targets_have_two_per_image_thresholds(mode):
 
 def test_summary_marks_partial_and_rejects_mixed_splits(tmp_path):
     from experiments.ablation_experiments.analyze import summarize
-    jobs = batch.build_plan(tmp_path, tmp_path, tmp_path, tmp_path / "pd.json", tmp_path / "manifest.json", [42])
+    jobs = batch.build_plan(tmp_path, tmp_path, tmp_path, tmp_path / "pd.json", tmp_path / "manifest.json", [42], backend="unified")
     write(tmp_path / "protocol.json", {"jobs": jobs})
     result = {"cohort_json_sha256": "cohort", "pair_manifest_sha256": "pairs",
               "split_manifest_sha256": "splits", "stage2_input_mode": "native_pair",

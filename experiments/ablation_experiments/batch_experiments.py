@@ -24,7 +24,10 @@ from experiments.ablation_experiments.protocol import (
 
 # All six routes use these same settings. Do not put per-route hyperparameters
 # here: topology source is the only factor varied by this experiment family.
-EXPERIMENT_NAME = "topology_targets_v2"
+EXPERIMENT_NAME = "topology_targets_v3_full"
+STAGE2_BACKEND = "full"             # full: original paper Stage2; unified: cached Core
+FULL_STAGE2_REPEATS = 3             # Original 5-fold x 3, seeds 42/1042/2042
+FULL_STAGE2_NUM_WORKERS = 0
 DEVICES = ["auto"]                 # e.g. ["cuda:0", "cuda:1"] on the training server
 PRETRAIN_SEEDS = [42]               # Independent Stage0/1 runs if more seeds are added
 DATASET_ROOT = CODES / "datasets"
@@ -42,10 +45,13 @@ STAGE2_SETTINGS = {
 }
 
 
-def build_plan(root, dataset_root, corn_root, pd_json, manifest, seeds):
+def build_plan(root, dataset_root, corn_root, pd_json, manifest, seeds,
+               backend=STAGE2_BACKEND, full_repeats=FULL_STAGE2_REPEATS):
     """Pure plan construction: no training imports, directories or GPU access."""
     if not seeds or len(set(seeds)) != len(seeds):
         raise ValueError("pretraining seeds must be nonempty and unique")
+    if backend not in ("full", "unified") or full_repeats < 1:
+        raise ValueError("Invalid Stage2 backend or repeat count")
     jobs = {"stage0": [], "stage1": [], "stage2": []}
     for seed in seeds:
         base = root / f"pretrain_seed{seed}"
@@ -62,6 +68,14 @@ def build_plan(root, dataset_root, corn_root, pd_json, manifest, seeds):
                        output_dir=str(base / "stage1"), run_name=name,
                        allow_dm_disease=False, train_denoiser=False)
             jobs["stage1"].append({"id": f"s1_{name}_seed{seed}", "stage": "stage1", "config": cfg})
+            if backend == "full":
+                from experiments.ablation_experiments.full_stage2 import build_full_config
+                cfg = build_full_config(checkpoint(base / "stage1" / name),
+                                        base / "stage2" / name, pd_json, dataset_root,
+                                        full_repeats, FULL_STAGE2_NUM_WORKERS)
+                jobs["stage2"].append({"id": f"s2_{name}_seed{seed}", "stage": "stage2",
+                    "backend": "full", "variant": name, "pretrain_seed": seed, "config": cfg})
+                continue
             core = deepcopy(STAGE2_SETTINGS)
             core.update(dataset_root=str(dataset_root), dataset_json=str(pd_json),
                         output_root=str(base / "stage2" / name),
@@ -70,7 +84,7 @@ def build_plan(root, dataset_root, corn_root, pd_json, manifest, seeds):
                             "use_ema": True, "auto_pretrain_if_missing": False,
                         }})
             jobs["stage2"].append({"id": f"s2_{name}_seed{seed}", "stage": "stage2",
-                                    "encoder": ENCODER, "config": core})
+                                    "backend": "unified", "encoder": ENCODER, "config": core})
     return jobs
 
 
@@ -122,7 +136,10 @@ def execute_phase(jobs, root, devices, retry_incomplete=False, max_folds=0):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--name", default=EXPERIMENT_NAME)
+    parser.add_argument("--name", default=None)
+    parser.add_argument("--stage2-backend", choices=("full", "unified"), default=STAGE2_BACKEND)
+    parser.add_argument("--full-stage2-repeats", type=int, default=FULL_STAGE2_REPEATS)
+    parser.add_argument("--pretrained-from", type=Path, help="Reuse completed matching Stage0/1 from an existing ablation result directory")
     parser.add_argument("--phase", choices=("all", "pretrain", "stage0", "stage1", "stage2", "prepare", "analyze"), default="all")
     parser.add_argument("--variants", nargs="+", choices=tuple(ROUTES), default=list(ROUTES))
     parser.add_argument("--devices", nargs="+", default=DEVICES)
@@ -141,7 +158,13 @@ def main():
         parser.error("Devices must be auto, cpu, mps, or cuda:N")
     if args.max_folds < 0:
         parser.error("--max-folds must be nonnegative")
-    root = run_root(args.name)
+    if args.full_stage2_repeats < 1:
+        parser.error("--full-stage2-repeats must be positive")
+    if args.stage2_backend == "full" and args.max_folds:
+        parser.error("--max-folds is a Unified-only pilot flag; full Stage2 runs complete folds")
+    if args.pretrained_from and args.phase not in ("all", "stage2", "prepare", "analyze"):
+        parser.error("--pretrained-from requires all, stage2, prepare, or analyze")
+    root = run_root(args.name or (EXPERIMENT_NAME if args.stage2_backend == "full" else "topology_targets_v3_unified"))
     if args.phase == "analyze":
         from experiments.ablation_experiments.analyze import summarize
         summarize(root)
@@ -151,9 +174,18 @@ def main():
     corn = (args.corn1_root or (CORN1_ROOT if default_root else dataset / "CORN-1")).expanduser().resolve()
     pd = (args.pd_json or (PD_JSON if default_root else dataset / "pd_dataset_en/patients_dataset_en.json")).expanduser().resolve()
     manifest = (args.stage1_manifest or (STAGE1_MANIFEST if default_root else dataset / "unlabeled_dataset_en/unlabeled_dataset_en.json")).expanduser().resolve()
-    jobs = build_plan(root, dataset, corn, pd, manifest, args.pretrain_seeds)
+    jobs = build_plan(root, dataset, corn, pd, manifest, args.pretrain_seeds,
+                      args.stage2_backend, args.full_stage2_repeats)
+    if args.pretrained_from:
+        from experiments.ablation_experiments.reuse_pretrain import reuse_parents
+        reuse_parents(jobs, args.pretrained_from.expanduser().resolve(),
+                      args.variants, verify=not args.dry_run)
     chosen = selected_jobs(jobs, "all" if args.phase == "prepare" else args.phase, args.variants)
-    print(f"Output: {root}\nStage2: {ENCODER}; frozen encoder + cached features")
+    if args.pretrained_from:
+        chosen = {"stage2": chosen["stage2"]}
+    print(f"Output: {root}\nStage2 backend: {args.stage2_backend}")
+    if args.stage2_backend == "full":
+        print(f"Original paper recipes: 1 binary + 3 stage + 5 subtype candidates per route; 5 folds x {args.full_stage2_repeats} repeats")
     for stage, items in chosen.items():
         for job in items:
             print(f"  {job['id']}")
@@ -161,13 +193,19 @@ def main():
         return
     # Lock all six, even for a filtered invocation; filters never change the
     # scientific protocol or allow stale checkpoints from another recipe.
-    contract = {"version": "topology-targets-v2", "jobs": jobs, "source_sha256": source_hashes()}
+    contract = {"version": "topology-targets-v3", "stage2_backend": args.stage2_backend,
+                "jobs": jobs, "source_sha256": source_hashes()}
     lock(root / "protocol.json", contract)
     for items in jobs.values():
         for job in items:
             lock(root / "configs" / f"{job['id']}.json", job)
     from experiments.ablation_experiments.audit import audit_inputs
-    audit_inputs(root, jobs)
+    audit = audit_inputs(root, jobs)
+    if args.pretrained_from:
+        from experiments.ablation_experiments.protocol import read
+        previous = read(args.pretrained_from.expanduser().resolve() / "input_audit.json")
+        if audit["input_file_sha256"] != previous["input_file_sha256"]:
+            raise RuntimeError("Reuse source data differs from current data audit")
     if args.phase == "prepare":
         print("Inputs audited and configurations saved. No training started.")
         return

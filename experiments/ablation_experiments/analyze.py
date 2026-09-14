@@ -9,6 +9,9 @@ from .protocol import ENCODER, ROUTES, read, write
 
 def summarize(root):
     protocol = read(root / "protocol.json")
+    if protocol.get("stage2_backend") == "full" or protocol["jobs"]["stage2"][0].get("backend") == "full":
+        from .full_stage2 import summarize_full
+        return summarize_full(root, protocol)
     rows, missing = [], []
     common = {}
     for job in protocol["jobs"]["stage2"]:

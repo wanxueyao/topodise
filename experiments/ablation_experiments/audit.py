@@ -2,7 +2,7 @@
 from pathlib import Path
 from copy import deepcopy
 
-from experiments._stage_configs import Stage0Config, Stage1Config
+from experiments._stage_configs import Stage0Config, Stage1Config, Stage2Config
 from experiments.unified_stage2_encoder_comparison.pretrain_topodise import _audit_inputs
 from experiments.unified_stage2_encoder_comparison.cohort import load_cohort, build_audit, validate_audit
 from experiments.unified_stage2_encoder_comparison.config import DEFAULTS, _deep_update, validate_config
@@ -38,18 +38,35 @@ def audit_inputs(root, jobs):
     cohort_audit = build_audit(Path(s1.pd_json), records, exclusions)
     validate_audit(cohort_audit)
     audit["stage2_cohort"] = cohort_audit
-    for job in jobs["stage2"]:
-        core = _deep_update(deepcopy(DEFAULTS), job["config"])
-        validate_config(core)
-    core = _deep_update(deepcopy(DEFAULTS), jobs["stage2"][0]["config"])
-    lock(root / "common_stage2_manifests/pairs.json", build_pair_manifest(
-        records, int(core["pairing"]["seed"]), int(core["pairing"]["cap"])))
-    for task in core["tasks"]:
-        for seed in core["splits"]["seeds"]:
-            split = build_split_manifest(records, task, seed, core["splits"]["outer_folds"],
-                                         core["splits"]["inner_val_ratio"])
-            validate_split_manifest(split)
-            lock(root / "common_stage2_manifests" / f"splits_{task}_seed{seed}.json", split)
+    if jobs["stage2"][0].get("backend") == "full":
+        from experiments.topodise_experiments.stage2_racf_downstream.main import _make_dataset, _build_kfold_splits
+        for recipe in jobs["stage2"][0]["config"]["recipes"]:
+            for candidate in recipe["candidates"]:
+                cfg = Stage2Config(**candidate["config"])
+                ds = _make_dataset(cfg, None)
+                folds = []
+                for fold, (train, val) in enumerate(_build_kfold_splits(ds, cfg), 1):
+                    train_ids = sorted({str(ds.samples[i][3]) for i in train})
+                    val_ids = sorted({str(ds.samples[i][3]) for i in val})
+                    if set(train_ids) & set(val_ids):
+                        raise RuntimeError("Full Stage2 patient split overlap")
+                    folds.append({"fold": fold, "train_patients": train_ids, "val_patients": val_ids})
+                lock(root / "full_stage2_manifests" / f"{candidate['name']}.json",
+                     {"task": cfg.task, "samples": ds.samples, "folds": folds,
+                      "evaluation": "original validation-selected CV"})
+    else:
+        for job in jobs["stage2"]:
+            core = _deep_update(deepcopy(DEFAULTS), job["config"])
+            validate_config(core)
+        core = _deep_update(deepcopy(DEFAULTS), jobs["stage2"][0]["config"])
+        lock(root / "common_stage2_manifests/pairs.json", build_pair_manifest(
+            records, int(core["pairing"]["seed"]), int(core["pairing"]["cap"])))
+        for task in core["tasks"]:
+            for seed in core["splits"]["seeds"]:
+                split = build_split_manifest(records, task, seed, core["splits"]["outer_folds"],
+                                             core["splits"]["inner_val_ratio"])
+                validate_split_manifest(split)
+                lock(root / "common_stage2_manifests" / f"splits_{task}_seed{seed}.json", split)
     files = set(corn.paths) | {_derive_label_path(p) for p in corn.paths}
     files.update(r[k] for r in regions.pairs for k in ("central", "whorl"))
     files.update(str(p) for record in records for p in (*record.central, *record.whorl))
