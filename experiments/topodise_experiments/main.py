@@ -368,6 +368,10 @@ class TopoDiSEExperiment:
             declared = [s for s in declared if s in self.STAGE_FILTER]
         exp_dir = os.path.join(output_dir, exp['_group'])
         prev = self._load_resume_summary(exp_dir, exp['_group'], declared, output_dir)
+        expected_mode = getattr(self, 'REPRODUCIBILITY_MODE', None)
+        if (prev is not None and expected_mode is not None
+                and prev.get('reproducibility') != expected_mode):
+            return None
         if prev is not None and self._experiment_is_complete(prev, declared, exp):
             return prev
         return None
@@ -428,11 +432,15 @@ class TopoDiSEExperiment:
 
         exp_dir = os.path.join(output_dir, group)
         os.makedirs(exp_dir, exist_ok=True)
+        reproducibility_mode = getattr(self, 'REPRODUCIBILITY_MODE', None)
+        checkpoint_bundle = getattr(self, 'CHECKPOINT_BUNDLE', None)
         with open(os.path.join(exp_dir, '_experiment_def.json'), 'w') as f:
             json.dump({k: v for k, v in exp.items() if k != 'stage2_tasks'} | {
                 'stage2_tasks': exp.get('stage2_tasks', []),
                 'resolved_stages': requested_stages,
                 'auto_fallback': auto_fallback,
+                'reproducibility': reproducibility_mode,
+                'checkpoint_bundle': checkpoint_bundle,
                 'site': self.RUN_SITE,
             }, f, indent=2)
 
@@ -440,12 +448,21 @@ class TopoDiSEExperiment:
             '_group': group, '_desc': desc, 'dataset': exp.get('dataset', 'pd'),
             'stages_run': requested_stages, 'started': datetime.now().isoformat(),
             'auto_fallback': auto_fallback,
+            'reproducibility': reproducibility_mode,
+            'checkpoint_bundle': checkpoint_bundle,
             'stage_results': {}, 'stage2_results': {},
         }
 
         # ---- 断点续跑：检测历史运行 ----
         prev_summary = (self._load_resume_summary(exp_dir, group, requested_stages, output_dir)
                         if self.AUTO_RESUME else None)
+        if (prev_summary is not None and reproducibility_mode is not None
+                and prev_summary.get('reproducibility') != reproducibility_mode):
+            print(
+                f"[resume][{group}] 忽略不同 reproducibility 模式的旧结果: "
+                f"{prev_summary.get('reproducibility')!r} != {reproducibility_mode!r}"
+            )
+            prev_summary = None
         if prev_summary is not None and self._experiment_is_complete(prev_summary, declared_stages, exp):
             print(f"[resume][skip][{group}] 已全部完成，跳过重跑")
             return prev_summary
@@ -757,34 +774,6 @@ class TopoDiSEExperiment:
         return -sum(float(p) * math.log(max(float(p), 1e-12)) for p in probs)
 
 
-    def _fold_calibrated_entropy_choice(self,
-        candidates: List[Dict[str, Any]],
-        entropy_baselines: Dict[str, float],
-    ) -> tuple[Dict[str, Any], Dict[str, float]]:
-        """Route by entropy relative to each candidate's fold-level baseline.
-
-        Raw entropies from independently trained candidates are not necessarily
-        calibrated to the same scale. Centering each entropy by that candidate's
-        mean entropy in the fold preserves entropy routing while removing a fixed
-        candidate-specific confidence offset. No labels are used.
-        """
-        if not candidates:
-            raise ValueError('fold-calibrated entropy requires at least one candidate')
-
-        centered_entropies: Dict[str, float] = {}
-        for candidate in candidates:
-            name = str(candidate.get('candidate', ''))
-            entropy = self._prob_entropy(list(candidate['probs']))
-            baseline = float(entropy_baselines.get(name, 0.0))
-            centered_entropies[name] = entropy - baseline
-        chosen = min(
-            candidates,
-            key=lambda c: (centered_entropies[str(c.get('candidate', ''))],
-                           str(c.get('candidate', ''))),
-        )
-        return chosen, centered_entropies
-
-
     def _expected_round_pred(self, probs: List[float]) -> int:
         exp = sum(idx * float(prob) for idx, prob in enumerate(probs))
         return min(len(probs) - 1, max(0, int(round(exp))))
@@ -912,23 +901,6 @@ class TopoDiSEExperiment:
                     candidates, key=lambda c: (bucket.get(c, 0), c)
                 )
 
-        # 候选模型由不同训练轨迹产生，原始熵的尺度可能存在固定偏移。按折、按候选
-        # 计算无标签基准熵，供校准熵路由使用。这里只读取预测分布，不读取标签。
-        _fold_candidate_entropy_baseline: Dict[tuple, float] = {}
-        if task == 'pd_stage':
-            _fold_candidate_entropy_values: Dict[tuple, List[float]] = {}
-            for (fold_idx, _patient_id), vals in complete_groups.items():
-                for value in vals:
-                    key = (fold_idx, value['candidate'])
-                    _fold_candidate_entropy_values.setdefault(key, []).append(
-                        self._prob_entropy(list(value['probs']))
-                    )
-            _fold_candidate_entropy_baseline = {
-                key: sum(values) / len(values)
-                for key, values in _fold_candidate_entropy_values.items()
-                if values
-            }
-
         def _build_prediction_rows(method: str) -> List[Dict[str, Any]]:
             out: List[Dict[str, Any]] = []
             for (fold_idx, patient_id), vals in sorted(complete_groups.items()):
@@ -952,25 +924,21 @@ class TopoDiSEExperiment:
                     probs = self._mean_vec([list(v['probs']) for v in vals])
                     pred = tied[0] if len(tied) == 1 else max(tied, key=lambda label: (probs[label], -label))
                     extra = {'votes': vote_counts}
-                elif method == 'fold_calibrated_entropy_routing':
-                    baselines = {
-                        value['candidate']: _fold_candidate_entropy_baseline[
-                            (fold_idx, value['candidate'])
-                        ]
-                        for value in vals
-                    }
-                    chosen, centered_entropies = self._fold_calibrated_entropy_choice(
-                        vals, baselines
+                elif method == 'min_entropy_routing':
+                    chosen = min(
+                        vals,
+                        key=lambda value: (
+                            self._prob_entropy(list(value['probs'])),
+                            str(value['candidate']),
+                        ),
                     )
                     probs = list(chosen['probs'])
                     pred = int(chosen['y_pred'])
                     extra = {
                         'selected_candidate': chosen['candidate'],
                         'patient_entropy': self._prob_entropy(probs),
-                        'entropy_baseline': baselines[chosen['candidate']],
-                        'centered_entropy': centered_entropies[chosen['candidate']],
-                        'centered_entropies': centered_entropies,
-                        'route': 'minimum_fold_centered_entropy',
+                        'route': 'minimum_entropy_across_u0_u1_u2',
+                        'uses_labels_for_routing': False,
                     }
                 elif method == 'mean_logits':
                     logits = self._mean_vec([list(v['logits']) for v in vals])
@@ -1029,8 +997,8 @@ class TopoDiSEExperiment:
             return out
 
         if task == 'pd_stage':
-            # 分期只保留唯一正式算法；不再生成旧熵路由、投票、均值或 oracle 结果。
-            practical_methods = ['fold_calibrated_entropy_routing']
+            # 每次患者检测只在该折的 U0/U1/U2 三个候选间按最低熵选择。
+            practical_methods = ['min_entropy_routing']
             optimistic_methods: List[str] = []
         else:
             # subtype 等任务继续保留其原有的多数投票及诊断集成方法。

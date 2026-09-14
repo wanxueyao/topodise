@@ -46,10 +46,11 @@ EXPERIMENTS = [{'_group': 'c8bf6b548656_stage1',
              'frangi_beta': 0.5,
              'frangi_c': 0.5,
              'train_denoiser': False,
+             'seed': 42,
              'output_dir': 'results/topodise',
              'run_name': 'c8bf6b548656_stage1',
              'device': 'auto',
-             'reproducibility': True,
+             'reproducibility': 'portable',
              'parent_encoder_weights': 'raw',
              'amp': False,
              'channels_last': False,
@@ -67,12 +68,43 @@ def main(argv=None):
     parser.add_argument('--concurrency-per-gpu', type=int, default=CONCURRENCY_PER_GPU)
     parser.add_argument('--num-workers', type=int, default=NUM_WORKERS)
     parser.add_argument('--output-dir', default=OUTPUT_DIR)
+    parser.add_argument('--parent-ckpt', default=None,
+                        help='Stage0 检查点路径；覆盖配置文件中的 parent_ckpt')
+    repro_group = parser.add_mutually_exclusive_group()
+    repro_group.add_argument(
+        '--reproducibility', nargs='?', const='strict',
+        choices=['strict', 'portable'],
+        help='复现模式：strict 或 portable；不带值时等价于 strict',
+    )
+    repro_group.add_argument(
+        '--no-reproducibility', dest='reproducibility', action='store_const',
+        const='portable', help='兼容别名：等价于 --reproducibility portable',
+    )
+    parser.set_defaults(reproducibility=None)
     parser.add_argument('--list', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args(argv)
     if args.num_workers < 0 or args.concurrency_per_gpu < 1:
         parser.error('num-workers 必须非负，concurrency-per-gpu 必须为正数')
+    effective_reproducibility = str(
+        args.reproducibility
+        or os.environ.get('TOPODISE_REPRODUCIBILITY')
+        or EXPERIMENTS[0]['config']['reproducibility']
+    ).strip().lower()
+    if effective_reproducibility in ('strict', '1', 'true', 'on', 'yes') and args.num_workers != 4:
+        parser.error('strict 模式的 c8 近似复刻固定 --num-workers 4')
     experiments = copy.deepcopy(EXPERIMENTS)
+    if args.parent_ckpt is not None:
+        for exp in experiments:
+            exp['config']['parent_ckpt'] = args.parent_ckpt
+    if args.reproducibility is not None:
+        for exp in experiments:
+            exp['config']['reproducibility'] = args.reproducibility
+        # An explicit CLI choice must override an inherited environment value
+        # in the worker process as well as the serialized config.
+        os.environ['TOPODISE_REPRODUCIBILITY'] = args.reproducibility
+        if args.reproducibility == 'strict':
+            os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
     groups = [g.strip() for g in args.group.split(',') if g.strip()]
     unknown = set(groups) - {e['_group'] for e in experiments}
     if unknown:

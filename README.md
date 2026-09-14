@@ -148,7 +148,61 @@ python -m experiments.topodise_experiments.batch_experiments --section dm_transf
 python -m experiments.topodise_experiments.batch_experiments --section all --dry-run
 ```
 
-总入口缺少父检查点时会自动生成并共享 Stage0/1 权重；可在批量文件的 `EXTERNAL_PARENT_CKPT` 指定已有 Stage1 权重。Stage0/1 训练独占一张卡，Stage2 根据每卡并发数调度。Stage 集成保留 U0/U1/U2 的熵路由，subtype 集成保留 TDREST0/1/2/5/7 的多数投票。
+### TopoDiSE 三态 reproducibility
+
+总入口的 `reproducibility` 参数有三个明确状态：
+
+| 状态 | Stage0/1 | 用途 |
+|---|---|---|
+| `strict` | 从零训练 | 固定 c8 配方、seed 42、4 workers、全部 RNG 和确定性后端，用于稳定的近似复刻 |
+| `portable` | 从零训练 | 只保持方法和配方一致，不强制 RNG/确定性 CUDA 约束，适配不同 GPU/CPU/MPS |
+| `checkpoint` | 跳过 | 直接使用给定 c8 Stage1 checkpoint 运行 Stage2，用于复现论文最佳权重结果 |
+
+```bash
+# 1. 从零严格近似复刻
+python -m experiments.topodise_experiments.batch_experiments \
+  --section main_tasks --reproducibility strict
+
+# 2. 从零设备自适应训练（默认）
+python -m experiments.topodise_experiments.batch_experiments \
+  --section main_tasks --reproducibility portable
+
+# 3. 直接调用 c8 Stage1 权重
+python -m experiments.topodise_experiments.batch_experiments \
+  --section main_tasks --reproducibility checkpoint \
+  --checkpoint-dir /path/to/c8_checkpoint_bundle
+```
+
+不带值的 `--reproducibility` 保留为 `strict` 的兼容写法；
+`--no-reproducibility` 等价于 `portable`。也可使用
+`TOPODISE_REPRODUCIBILITY=strict|portable|checkpoint`，checkpoint 目录可用
+`TOPODISE_CHECKPOINT_DIR` 指定。
+
+`strict` 和 `portable` 都会禁止跨批次复用旧预训练权重，确保本次预训练起步于随机初始化；
+同一输出目录的中断任务仍可继续恢复。`strict` 在不支持确定性算子的设备上会明确报错，
+此时应改用 `portable`。
+
+checkpoint 目录推荐保留服务器现有的预训练包结构：
+
+```text
+c8_checkpoint_bundle/
+├── _experiment_def.json                 # 可选，实验溯源
+├── summary.json                         # 可选，训练摘要
+├── <name>_stage0/                       # 可选
+│   └── ckpt/ema_best.pt
+└── <name>_stage1/                       # 必需
+    └── ckpt/ema_best.pt
+```
+
+对精简分发包，也可只保留 `stage1/ema_best.pt`。程序会优先寻找
+`ema_best.pt`，其次是 `last.pt`；同一阶段存在多个候选时会报错，避免静默选错权重。
+
+已验证的 `strict` 从零基线为 Stage0 epoch 100、loss `0.1106367812`；
+GPU0/GPU1 学习状态完全一致。固定下游规则下，PD Stage 为
+**65.61%**，PD Subtype TD-rest 为 **70.90%**。历史 c8 Stage1 checkpoint 对应
+**69.31% / 74.07%**。Stage 使用单患者 U0/U1/U2 最低熵选择，Subtype 使用
+TDREST0/1/2/5/7 多数投票，都不读取患者标签。详细数值记录见
+[最佳预训练配置说明](experiments/topodise_experiments/REPRODUCE_C8BF6B548656.md)。
 
 三个 stage 也有各自独立的批量配置：
 

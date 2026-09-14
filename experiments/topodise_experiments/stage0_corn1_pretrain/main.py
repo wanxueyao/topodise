@@ -45,6 +45,7 @@ from topodise.reproducibility import (
     capture_rng_state,
     configure_reproducibility,
     restore_rng_state,
+    seed_data_loader_worker,
 )
 from experiments._stage_configs import Stage0Config
 
@@ -104,7 +105,15 @@ def _torch_save_atomic(payload: dict, path: str) -> None:
 
 
 def run_single_experiment(cfg: Stage0Config) -> dict:
-    rng_strategy = configure_reproducibility(cfg.reproducibility)
+    rng_strategy = configure_reproducibility(
+        cfg.reproducibility, seed=cfg.seed,
+    )
+    cfg.reproducibility = rng_strategy["mode"]
+    cfg.deterministic = bool(rng_strategy["deterministic"])
+    if cfg.deterministic:
+        # Persistent worker-private RNG state cannot be checkpointed exactly.
+        # The c8 reference recipe already uses False.
+        cfg.persistent_workers = False
     device = _pick_device(cfg.device)
 
     cfg.corn1_root = _resolve_input_path(cfg.corn1_root)
@@ -130,6 +139,7 @@ def run_single_experiment(cfg: Stage0Config) -> dict:
         "smoke": cfg.smoke,
         "rng_strategy": rng_strategy["strategy"],
         "reproducibility": cfg.reproducibility,
+        "deterministic": cfg.deterministic,
         "fixed_torch_seed": rng_strategy.get("seed"),
         "reference_recipe": rng_strategy.get("recipe"),
     })
@@ -160,6 +170,8 @@ def run_single_experiment(cfg: Stage0Config) -> dict:
     }
     if loader_workers > 0:
         loader_kwargs["prefetch_factor"] = max(1, int(cfg.prefetch_factor))
+    if cfg.deterministic:
+        loader_kwargs["worker_init_fn"] = seed_data_loader_worker
     loader = DataLoader(dataset, **loader_kwargs)
     logger.info(f"dataset: size={len(dataset)} batches/epoch={len(loader)}")
 

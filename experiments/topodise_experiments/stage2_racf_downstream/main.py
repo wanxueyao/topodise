@@ -25,6 +25,7 @@ import hashlib
 from dataclasses import asdict
 from typing import List
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -90,6 +91,36 @@ _cap_cpu_threads()
 # 其中使用 exp/log）保持 fp32。CUDA 默认开启，可用 TOPODISE_AMP=0 禁用；
 # 在 CPU/MPS 上不执行任何额外操作。
 _AMP_ENABLED = os.environ.get("TOPODISE_AMP", "1").strip() not in ("0", "false", "False")
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def _configure_reproducibility(cfg: Stage2Config) -> None:
+    """Resolve and apply the Stage2 reproducibility contract before CUDA use."""
+    cfg.deterministic = bool(getattr(cfg, "deterministic", False)) or _env_flag(
+        "TOPODISE_DETERMINISTIC", False
+    )
+    seed = int(cfg.seed)
+    # Preserve the historical portable Stage2 method, which seeded only Torch.
+    torch.manual_seed(seed)
+    if cfg.deterministic:
+        # This must be present before the first CUDA call. Launchers should set
+        # it before Python starts; setdefault protects direct entry points.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        random.seed(seed)
+        np.random.seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.use_deterministic_algorithms(True)
 
 
 def _autocast(device):
@@ -705,7 +736,7 @@ def run_single_experiment(cfg: Stage2Config) -> dict:
 
 
 def _run_single_task_experiment(cfg: Stage2Config) -> dict:
-    torch.manual_seed(cfg.seed)
+    _configure_reproducibility(cfg)
     device = _pick_device(cfg.device)
     run_dir = os.path.join(cfg.output_dir, f"{cfg.run_name}_{cfg.task}")
     os.makedirs(run_dir, exist_ok=True)
@@ -733,6 +764,7 @@ def _run_single_task_experiment(cfg: Stage2Config) -> dict:
         "lambda_recon": cfg.lambda_recon, "tau_supcon": cfg.tau_supcon,
         "label_smooth_eps": cfg.label_smooth_eps,
         "use_class_weights": cfg.use_class_weights,
+        "deterministic": cfg.deterministic,
         "use_weight_ema": cfg.use_weight_ema,
         "weight_ema_decay": cfg.weight_ema_decay,
         "smoke": cfg.smoke, "seed": cfg.seed,
@@ -1388,7 +1420,7 @@ def _run_mil_experiment(cfg: Stage2Config) -> dict:
     image-pairs; a gated-attention head pools instance embeddings into one
     patient embedding trained directly against the patient label. Evaluation is
     natively patient-level (no post-hoc aggregation needed)."""
-    torch.manual_seed(cfg.seed)
+    _configure_reproducibility(cfg)
     device = _pick_device(cfg.device)
     run_dir = os.path.join(cfg.output_dir, f"{cfg.run_name}_{cfg.task}")
     os.makedirs(run_dir, exist_ok=True)
@@ -1419,6 +1451,7 @@ def _run_mil_experiment(cfg: Stage2Config) -> dict:
         "fdiff_gate_mode": cfg.fdiff_gate_mode,
         "fdiff_target_grad_scale": cfg.fdiff_target_grad_scale,
         "smoke": cfg.smoke, "seed": cfg.seed,
+        "deterministic": cfg.deterministic,
     })
     logger.event("env", **env_banner())
 
@@ -2331,7 +2364,7 @@ def _run_mil_dual_subtype_experiment(cfg: Stage2Config) -> dict:
                  (compare P_A(TD) vs P_B(PIGD)).
     Records TD-vs-rest acc, PIGD-vs-rest acc, and the fused 3-class acc.
     """
-    torch.manual_seed(cfg.seed)
+    _configure_reproducibility(cfg)
     device = _pick_device(cfg.device)
     cfg.task = "pd_subtype"   # 三分类标签：0=TD，1=PIGD，2=混合型。
     run_dir = os.path.join(cfg.output_dir, f"{cfg.run_name}_pd_subtype_dual")
@@ -2352,6 +2385,7 @@ def _run_mil_dual_subtype_experiment(cfg: Stage2Config) -> dict:
         "finetune_fusion": cfg.finetune_fusion, "use_focal": cfg.use_focal,
         "use_class_weights": cfg.use_class_weights, "use_weight_ema": cfg.use_weight_ema,
         "smoke": cfg.smoke, "seed": cfg.seed,
+        "deterministic": cfg.deterministic,
     })
     logger.event("env", **env_banner())
 
@@ -2489,7 +2523,7 @@ _MT_LABEL_KEY = {"pd_binary": "y_bin", "pd_stage": "y_stg", "pd_subtype": "y_sub
 
 
 def run_multitask_experiment(cfg: Stage2Config) -> dict:
-    torch.manual_seed(cfg.seed)
+    _configure_reproducibility(cfg)
     device = _pick_device(cfg.device)
     run_dir = os.path.join(cfg.output_dir, f"{cfg.run_name}_multitask")
     os.makedirs(run_dir, exist_ok=True)
@@ -2509,6 +2543,7 @@ def run_multitask_experiment(cfg: Stage2Config) -> dict:
         "epochs": cfg.epochs, "batch_size": cfg.batch_size,
         "lr": cfg.lr, "adapter_rank": cfg.adapter_rank,
         "smoke": cfg.smoke, "seed": cfg.seed,
+        "deterministic": cfg.deterministic,
     })
     logger.event("env", **env_banner())
 

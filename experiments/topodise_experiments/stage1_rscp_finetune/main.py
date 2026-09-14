@@ -40,6 +40,7 @@ from topodise.reproducibility import (
     capture_rng_state,
     configure_reproducibility,
     restore_rng_state,
+    seed_data_loader_worker,
 )
 from experiments._stage_configs import Stage1Config
 
@@ -105,7 +106,7 @@ def _torch_save_atomic(payload: dict, path: str) -> None:
     os.replace(temporary, path)
 
 
-def _build_from_ckpt(ckpt_path, device, encoder_weights="raw"):
+def _build_from_ckpt(ckpt_path, device):
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     cfg0 = ckpt.get("parent_config") or ckpt["config"]
     enc_cfg = EncoderConfig(
@@ -124,32 +125,26 @@ def _build_from_ckpt(ckpt_path, device, encoder_weights="raw"):
     encoder = TopoDiSEEncoder(enc_cfg).to(device)
     unet = ConditionalUNet(unet_cfg).to(device)
     topo_head = TopoHead(z_dim=cfg0["z_dim"]).to(device)
-    if encoder_weights == "raw":
-        encoder_state = ckpt["encoder"]
-    elif encoder_weights == "ema":
-        if "ema_encoder" in ckpt:
-            encoder_state = ckpt["ema_encoder"]
-        elif "ema" in ckpt:
-            prefix = "encoder."
-            encoder_state = {
-                key[len(prefix):]: value
-                for key, value in ckpt["ema"].items()
-                if key.startswith(prefix)
-            }
-            if not encoder_state:
-                raise KeyError("checkpoint EMA state does not contain encoder.* parameters")
-        else:
-            raise KeyError("checkpoint does not contain EMA encoder weights")
-    else:
-        raise ValueError("parent_encoder_weights must be 'raw' or 'ema'")
-    encoder.load_state_dict(encoder_state, strict=True)
+    # The recorded c8 recipe always initializes Stage1 from the raw encoder
+    # stored in Stage0's ema_best.pt container.
+    encoder.load_state_dict(ckpt["encoder"], strict=True)
     unet.load_state_dict(ckpt["unet"])
     topo_head.load_state_dict(ckpt["topo_head"])
     return encoder, unet, topo_head, cfg0
 
 
 def run_single_experiment(cfg: Stage1Config) -> dict:
-    rng_strategy = configure_reproducibility(cfg.reproducibility)
+    if cfg.parent_encoder_weights != "raw":
+        raise ValueError("the c8 Stage1 method requires parent_encoder_weights='raw'")
+    rng_strategy = configure_reproducibility(
+        cfg.reproducibility, seed=cfg.seed,
+    )
+    cfg.reproducibility = rng_strategy["mode"]
+    cfg.deterministic = bool(rng_strategy["deterministic"])
+    if cfg.deterministic:
+        # Persistent worker-private RNG state cannot be checkpointed exactly.
+        # The c8 reference recipe already uses False.
+        cfg.persistent_workers = False
     device = _pick_device(cfg.device)
 
     cfg.parent_ckpt = _resolve_input_path(cfg.parent_ckpt)
@@ -178,18 +173,17 @@ def run_single_experiment(cfg: Stage1Config) -> dict:
         "lambda_simple": cfg.lambda_simple,
         "lambda_topo": cfg.lambda_topo, "lambda_region": cfg.lambda_region,
         "tau_region": cfg.tau_region,
-        "smoke": cfg.smoke,
+        "smoke": cfg.smoke, "seed": cfg.seed,
         "rng_strategy": rng_strategy["strategy"],
         "reproducibility": cfg.reproducibility,
+        "deterministic": cfg.deterministic,
         "fixed_torch_seed": rng_strategy.get("seed"),
         "reference_recipe": rng_strategy.get("recipe"),
     })
     logger.event("env", **env_banner())
     logger.event("rng_strategy", **rng_strategy)
 
-    encoder, unet, topo_head, parent_cfg = _build_from_ckpt(
-        cfg.parent_ckpt, device, encoder_weights=cfg.parent_encoder_weights,
-    )
+    encoder, unet, topo_head, parent_cfg = _build_from_ckpt(cfg.parent_ckpt, device)
     parent_checkpoint_sha256 = _sha256_file(cfg.parent_ckpt)
     if cfg.channels_last and device.type == "cuda":
         encoder = encoder.to(memory_format=torch.channels_last)
@@ -224,6 +218,8 @@ def run_single_experiment(cfg: Stage1Config) -> dict:
     }
     if loader_workers > 0:
         loader_kwargs["prefetch_factor"] = max(1, int(cfg.prefetch_factor))
+    if cfg.deterministic:
+        loader_kwargs["worker_init_fn"] = seed_data_loader_worker
     loader = DataLoader(ds, **loader_kwargs)
     logger.info(f"region pairs: {len(ds)} batches/epoch={len(loader)}")
     reference_pd_recipe = (

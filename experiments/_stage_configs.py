@@ -30,6 +30,7 @@ class Stage0Config:
     schedule: str = "cosine"
 
     # --- 训练
+    seed: int = 42
     epochs: int = 200
     batch_size: int = 16
     lr: float = 1e-4
@@ -65,8 +66,10 @@ class Stage0Config:
     resume_ckpt: str = ""
     strict_resume: bool = True
     device: str = "auto"
-    # 仅控制是否在训练初始化时执行 torch.manual_seed(42)。
-    reproducibility: bool = True
+    # ``strict`` 是 c8 近似复刻的确定性路径；``portable`` 保留普通的
+    # 设备自适应训练行为。bool 仅作为旧配置兼容。
+    reproducibility: Literal["strict", "portable"] | bool = "portable"
+    deterministic: bool = False
     amp: bool = False
     channels_last: bool = False
     fused_adamw: bool = False
@@ -98,6 +101,7 @@ class Stage1Config:
     expected_region_pairs: Optional[int] = 182
 
     # --- 训练
+    seed: int = 42
     epochs: int = 80
     batch_size: int = 16
     lr: float = 2e-5
@@ -125,11 +129,10 @@ class Stage1Config:
     output_dir: str = "results"
     run_name: str = "topodise_stage1_rscp"
     device: str = "auto"
-    # 仅控制是否在训练初始化时执行 torch.manual_seed(42)。
-    reproducibility: bool = True
-    # 参考 Stage1 从 Stage0 的原始 ``encoder`` 状态初始化。
-    # ``ema`` 仍可用于显式消融，但不属于论文检查点配方。
-    parent_encoder_weights: str = "raw"  # 可选 raw 或 ema
+    reproducibility: Literal["strict", "portable"] | bool = "portable"
+    deterministic: bool = False
+    # c8 方法固定从 Stage0 checkpoint 中的 raw encoder 初始化。
+    parent_encoder_weights: Literal["raw"] = "raw"
     amp: bool = False
     channels_last: bool = False
     fused_adamw: bool = False
@@ -147,7 +150,6 @@ class Stage1Config:
 class Stage2Config:
     # --- parent ckpt (stage1 if available else stage0)
     parent_ckpt: str = ""
-
     # --- task: PD has 3 sub-tasks; DM has binary/subtype plus an auxiliary 3-way task.
     task: Literal["pd_binary", "pd_stage", "pd_subtype",
                   "pd_subtype_td_pigd", "pd_subtype_tdrest", "pd_subtype_pigd_mixed",
@@ -370,6 +372,10 @@ class Stage2Config:
     output_dir: str = "results"
     run_name: str = "topodise_stage2_racf"
     seed: int = 42
+    # Enforce reproducible Python/NumPy/PyTorch RNG state and deterministic
+    # CUDA kernels. Kept opt-in so historical experiment definitions retain
+    # their original numerical behaviour unless explicitly requested.
+    deterministic: bool = False
     device: str = "auto"
 
     smoke: bool = False

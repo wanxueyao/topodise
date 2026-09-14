@@ -11,13 +11,13 @@ import sys
 import json
 import time
 import copy
-import glob
 import hashlib
 import argparse
 import traceback
 import multiprocessing
 import queue
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 try:
@@ -67,6 +67,93 @@ def _resolve_search_dir_path(path: str) -> str:
     return primary
 
 
+REPRODUCIBILITY_MODES = ('strict', 'portable', 'checkpoint')
+
+
+def _normalize_reproducibility_mode(value: Any) -> str:
+    """解析三态复现模式，并兼容旧的 bool/0/1 配置。"""
+    if isinstance(value, bool):
+        return 'strict' if value else 'portable'
+    normalized = str(value).strip().lower()
+    aliases = {
+        '1': 'strict', 'true': 'strict', 'on': 'strict', 'yes': 'strict',
+        '2': 'portable', '0': 'portable', 'false': 'portable',
+        'off': 'portable', 'no': 'portable', '': 'portable',
+        '3': 'checkpoint', 'reference': 'checkpoint', 'c8': 'checkpoint',
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in REPRODUCIBILITY_MODES:
+        raise ValueError(
+            f'reproducibility must be one of {REPRODUCIBILITY_MODES}, got {value!r}'
+        )
+    return normalized
+
+
+def _checkpoint_in_stage_dir(root: Path, stage: int) -> Optional[Path]:
+    stage_name = f'stage{stage}'
+    stage_dirs = sorted(
+        child for child in root.iterdir()
+        if child.is_dir()
+        and (child.name.lower() == stage_name or child.name.lower().endswith(f'_{stage_name}'))
+    )
+    for relative in (
+        Path('ckpt/ema_best.pt'), Path('ema_best.pt'),
+        Path('ckpt/last.pt'), Path('last.pt'),
+    ):
+        matches = [directory / relative for directory in stage_dirs
+                   if (directory / relative).is_file() and (directory / relative).stat().st_size > 0]
+        if len(matches) > 1:
+            raise ValueError(
+                f'ambiguous Stage{stage} checkpoints under {root}: '
+                + ', '.join(str(path) for path in matches)
+            )
+        if matches:
+            return matches[0]
+    fallback = sorted(
+        path for directory in stage_dirs for path in directory.rglob('*.pt')
+        if path.is_file() and path.stat().st_size > 0
+    )
+    if len(fallback) > 1:
+        raise ValueError(
+            f'ambiguous Stage{stage} checkpoints under {root}: '
+            + ', '.join(str(path) for path in fallback)
+        )
+    return fallback[0] if fallback else None
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def resolve_checkpoint_bundle(checkpoint_dir: str) -> Dict[str, Any]:
+    """解析 c8 预训练目录；只有 Stage1 ``.pt`` 是运行所必需的。"""
+    root = Path(checkpoint_dir).expanduser().resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f'checkpoint directory does not exist: {root}')
+    stage1 = _checkpoint_in_stage_dir(root, 1)
+    if stage1 is None:
+        raise FileNotFoundError(
+            f'no Stage1 .pt checkpoint found under {root}; expected '
+            '<root>/*_stage1/ckpt/ema_best.pt or <root>/stage1/ema_best.pt'
+        )
+    stage0 = _checkpoint_in_stage_dir(root, 0)
+    metadata = [
+        str(path) for path in (root / '_experiment_def.json', root / 'summary.json')
+        if path.is_file()
+    ]
+    return {
+        'checkpoint_dir': str(root),
+        'stage1_checkpoint': str(stage1),
+        'stage1_sha256': _sha256_file(stage1),
+        'stage0_checkpoint': str(stage0) if stage0 is not None else None,
+        'metadata_files': metadata,
+    }
+
+
 AVAILABLE_GPUS = [0]  # [0] 一张卡；[0, 1] 两张卡；[] 使用 CPU
 _env_gpus_raw = os.environ.get('RUN_AVAILABLE_GPUS')
 if _env_gpus_raw is not None:
@@ -80,18 +167,9 @@ RUN_CONCURRENCY_PER_GPU = 1
 
 _RESULTS_ROOT = os.environ.get('RUN_RESULTS_ROOT', 'results').strip() or 'results'
 
-# ---- 可选外部父 ckpt（默认 None）----
-# Stage2-only 实验默认不再硬编码任何父检查点：批跑时会通过「共享预训练去重」
-# （见 main() 的 pretrain 去重逻辑）自动训练一份 Stage0/1 父 ckpt 并被所有相同
-# 配方的实验复用。仅当你想复用某个已存在的外部 ckpt 时，设置环境变量
-# RUN_PARENT_CKPT=<abs path> 即可让所有 stage2-only 实验直接用它（跳过预训练）。
-EXTERNAL_PARENT_CKPT = os.environ.get('RUN_PARENT_CKPT', '').strip() or None
-
-# ---- 跨批次复用已有 Stage0/1 预训练（默认开启）----
-# 跑 stage2-only 实验时，若 results 目录里已存在「相同 Stage0/1 配方」(recipe key
-# 完全一致) 的预训练产物，则直接复用其 Stage1 ckpt，跳过重复的 Stage0/1 训练。
-# 设 RUN_REUSE_PRETRAIN=0 可关闭此行为（强制每批重新预训练）。
-REUSE_PRETRAIN = bool(int(os.environ.get('RUN_REUSE_PRETRAIN', '1')))
+# 外部父权重只由 checkpoint 模式从 checkpoint bundle 显式注入。
+EXTERNAL_PARENT_CKPT = None
+CHECKPOINT_DIR = os.environ.get('TOPODISE_CHECKPOINT_DIR', '').strip() or None
 
 PARALLEL_EXPERIMENTS = bool(int(os.environ.get('RUN_PARALLEL_EXPERIMENTS',
                                                 str(int(RUN_PARALLEL_EXPERIMENTS)))))
@@ -120,10 +198,6 @@ OUTPUT_BASE_DIR = _resolve_project_path(os.environ.get(
     'RUN_OUTPUT_DIR',
     os.path.join(_RESULTS_ROOT, 'topodise'),
 ))
-_env_pretrain_search_dirs = _env_list('RUN_PRETRAIN_SEARCH_DIRS')
-PRETRAIN_SEARCH_DIRS = [
-    _resolve_search_dir_path(p) for p in _env_pretrain_search_dirs
-] if _env_pretrain_search_dirs else [OUTPUT_BASE_DIR]
 _env_resume_search_dirs = _env_list('RUN_RESUME_SEARCH_DIRS')
 RESUME_SEARCH_DIRS = [
     _resolve_search_dir_path(p) for p in _env_resume_search_dirs
@@ -160,7 +234,7 @@ DEFAULT_STAGE0_OVERRIDES: Dict[str, Any] = {
     'lambda_topo': 0.1,
     'z_dropout': 0.1,
     'topo_target': 'hgrad',
-    'reproducibility': True,
+    'reproducibility': 'portable',
     'amp': False,
     'channels_last': False,
     'fused_adamw': False,
@@ -180,7 +254,7 @@ DEFAULT_STAGE1_OVERRIDES: Dict[str, Any] = {
     'topo_target': 'hgrad',
     'parent_encoder_weights': 'raw',
     'patient_groups': ('control', 'control_cataract'),
-    'reproducibility': True,
+    'reproducibility': 'portable',
     'amp': False,
     'channels_last': False,
     'fused_adamw': False,
@@ -230,7 +304,7 @@ MAIN_TASKS_EXPERIMENTS = [{'_group': 'PAPER_BINARY_US0_stage2_on_c8bf6b548656',
   'parent_ckpt_override': None,
   'paper_report_method': 'single_model'},
  {'_group': 'PAPER_STAGE_entropy_routed_U0_U1_U2',
-  '_desc': 'PD stage result: label-free fold-calibrated entropy routing over U0/U1/U2.',
+  '_desc': 'PD stage result: label-free per-exam minimum-entropy routing over U0/U1/U2.',
   'dataset': 'pd',
   'stages': [2],
   'stage2_tasks': ['pd_stage'],
@@ -417,7 +491,7 @@ MAIN_TASKS_EXPERIMENTS = [{'_group': 'PAPER_BINARY_US0_stage2_on_c8bf6b548656',
   'oracle_mode': 'standard',
   'oracle_select_field': 'best_patient_acc',
   'auto_patient_logit_ensemble': True,
-  'paper_report_method': 'fold_calibrated_entropy_routing'},
+  'paper_report_method': 'min_entropy_routing'},
  {'_group': 'PAPER_SUBTYPE_majority_TDREST0_1_2_5_7',
   '_desc': 'Paper subtype result: label-free majority vote over TDREST0/1/2/5/7.',
   'dataset': 'pd',
@@ -2963,6 +3037,8 @@ _SIGNATURE_FIELDS = (
     'dataset', 'stages', 'stage0_overrides', 'stage1_overrides',
     'stage2_overrides', 'stage2_tasks',
     'oracle_experiments', 'oracle_mode', 'oracle_select_field',
+    'parent_ckpt_override',
+    'parent_checkpoint_sha256',
 )
 
 
@@ -2971,6 +3047,38 @@ from experiments.topodise_experiments.main import TopoDiSEExperiment
 
 class BatchRunner(TopoDiSEExperiment):
     """Selection, shared-pretrain scheduling, GPU placement and batch reports."""
+
+    def _apply_reproducibility_mode(
+        self, node: Dict[str, Any], mode: str, stage1_checkpoint: Optional[str],
+    ) -> None:
+        """将全局三态约定递归传给主实验和集成候选。"""
+        stages = list(node.get('stages', [0, 1, 2]))
+        if mode == 'checkpoint':
+            if 2 in stages:
+                node['stages'] = [2]
+                node['parent_ckpt_override'] = stage1_checkpoint
+        else:
+            # strict/portable 都必须起步于随机初始化，不接入外部权重。
+            node['parent_ckpt_override'] = None
+            node.pop('parent_checkpoint_sha256', None)
+            stage1_overrides = node.get('stage1_overrides')
+            if isinstance(stage1_overrides, dict):
+                stage1_overrides.pop('parent_ckpt', None)
+            if 1 in stages and 0 not in stages:
+                node['stages'] = [0, *stages]
+
+        active_stages = list(node.get('stages', stages))
+        for stage, key in ((0, 'stage0_overrides'), (1, 'stage1_overrides')):
+            overrides = node.get(key)
+            # Stage2-only 条目的空字典保持为空，让 fallback 补全 c8 默认配方；
+            # 显式运行 Stage0/1 时，即便原 overrides 为空也必须注入所选模式。
+            if isinstance(overrides, dict) and (overrides or stage in active_stages):
+                overrides['reproducibility'] = mode
+        stage2_overrides = node.get('stage2_overrides')
+        if isinstance(stage2_overrides, dict):
+            stage2_overrides['deterministic'] = mode in ('strict', 'checkpoint')
+        for child in node.get('oracle_experiments') or []:
+            self._apply_reproducibility_mode(child, mode, stage1_checkpoint)
 
     def _filter_experiments(self, exps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         kept = []
@@ -3004,37 +3112,6 @@ class BatchRunner(TopoDiSEExperiment):
             index.setdefault(key, {'stage0_overrides': s0, 'stage1_overrides': s1})
             assignment[e['_group']] = key
         return index, assignment
-
-
-    def _find_existing_pretrain_ckpt(self, key: str) -> Optional[str]:
-        """在结果目录树中搜索配方 ``key`` 已训练的 Stage1 检查点。
-
-        历史批次将共享预训练保存在
-        ``<search>/<batch>/_pretrain_<key>/_pretrain_<key>_stage1/ckpt/``。
-        因为 ``_pretrain_key`` 是配方的稳定哈希，匹配目录可安全复用。
-        函数返回当前批次之外最新的检查点；未找到时返回 None。
-        """
-        group = f'_pretrain_{key}'
-        search_dirs = self.PRETRAIN_SEARCH_DIRS or [self.OUTPUT_BASE_DIR]
-        patterns = []
-        for root in search_dirs:
-            patterns.extend([
-                os.path.join(root, '*', group, f'{group}_stage1', 'ckpt', 'ema_best.pt'),
-                os.path.join(root, '*', group, f'{group}_stage1', 'ckpt', 'last.pt'),
-            ])
-        candidates: List[str] = []
-        for pat in patterns:
-            for p in glob.glob(pat):
-                # 不复用当前批次尚未写完的检查点。
-                if os.path.normpath(self.OUTPUT_DIR) in os.path.normpath(p):
-                    continue
-                if os.path.exists(p) and os.path.getsize(p) > 0:
-                    candidates.append(p)
-        if not candidates:
-            return None
-        # 按修改时间选择最新文件；时间相同时优先 ema_best.pt。
-        candidates.sort(key=lambda p: (os.path.getmtime(p), p.endswith('ema_best.pt')))
-        return candidates[-1]
 
 
     def _merge_batch_summary_payloads(self, existing: Optional[Dict[str, Any]],
@@ -3245,6 +3322,8 @@ class BatchRunner(TopoDiSEExperiment):
                     'stage2_tasks': exp.get('stage2_tasks', []),
                     'resolved_stages': requested_stages,
                     'auto_fallback': None,
+                    'reproducibility': self.REPRODUCIBILITY_MODE,
+                    'checkpoint_bundle': self.CHECKPOINT_BUNDLE,
                     'site': self.RUN_SITE,
                 }, f, indent=2)
 
@@ -3255,6 +3334,8 @@ class BatchRunner(TopoDiSEExperiment):
                 'stages_run': requested_stages,
                 'started': datetime.now().isoformat(),
                 'auto_fallback': None,
+                'reproducibility': self.REPRODUCIBILITY_MODE,
+                'checkpoint_bundle': self.CHECKPOINT_BUNDLE,
                 'stage_results': {},
                 'stage2_results': {
                     '_oracle_meta': {
@@ -3474,6 +3555,27 @@ class BatchRunner(TopoDiSEExperiment):
         ap.add_argument('--gpus', default=None, help='0,1 使用两张卡；cpu 使用 CPU')
         ap.add_argument('--concurrency-per-gpu', type=int, default=self.CONCURRENCY_PER_GPU)
         ap.add_argument('--num-workers', type=int, default=self.NUM_WORKERS)
+        ap.add_argument(
+            '--stage2-kfold-repeats', type=int, default=None,
+            help='覆盖 Stage2 的 K-fold 重复次数；论文配置为 3',
+        )
+        repro_group = ap.add_mutually_exclusive_group()
+        repro_group.add_argument(
+            '--reproducibility', nargs='?', const='strict',
+            choices=list(REPRODUCIBILITY_MODES),
+            help='strict=确定性从零近似复刻；portable=设备自适应从零训练；'
+                 'checkpoint=直接使用 c8 Stage1 权重',
+        )
+        repro_group.add_argument(
+            '--no-reproducibility', dest='reproducibility', action='store_const',
+            const='portable',
+            help='兼容别名：等价于 --reproducibility portable',
+        )
+        ap.set_defaults(reproducibility=None)
+        ap.add_argument(
+            '--checkpoint-dir', default=self.CHECKPOINT_DIR,
+            help='checkpoint 模式的预训练包根目录；最少须包含 Stage1 .pt',
+        )
         ap.add_argument('--list', action='store_true', help='List selected groups without training')
         args = ap.parse_args(argv)
         if args.gpus is not None:
@@ -3484,6 +3586,40 @@ class BatchRunner(TopoDiSEExperiment):
             ap.error('并发数必须为正，num-workers 必须非负')
         self.CONCURRENCY_PER_GPU = args.concurrency_per_gpu
         self.NUM_WORKERS = 0 if args.smoke else args.num_workers
+        try:
+            mode = _normalize_reproducibility_mode(
+                args.reproducibility
+                if args.reproducibility is not None
+                else os.environ.get('TOPODISE_REPRODUCIBILITY', 'portable')
+            )
+        except ValueError as error:
+            ap.error(str(error))
+        checkpoint_bundle = None
+        if mode == 'checkpoint':
+            if not args.checkpoint_dir:
+                ap.error('--reproducibility checkpoint requires --checkpoint-dir')
+            try:
+                checkpoint_bundle = resolve_checkpoint_bundle(
+                    self._resolve_project_path(args.checkpoint_dir)
+                )
+            except (FileNotFoundError, ValueError) as error:
+                ap.error(str(error))
+            self.EXTERNAL_PARENT_CKPT = checkpoint_bundle['stage1_checkpoint']
+        else:
+            # 从零模式不会因历史配方缓存而偷换初始权重。
+            self.EXTERNAL_PARENT_CKPT = None
+        self.REPRODUCIBILITY_MODE = mode
+        self.CHECKPOINT_BUNDLE = checkpoint_bundle
+        self.DEFAULT_STAGE0_OVERRIDES['reproducibility'] = mode
+        self.DEFAULT_STAGE1_OVERRIDES['reproducibility'] = mode
+        os.environ['TOPODISE_REPRODUCIBILITY'] = mode
+        os.environ['TOPODISE_DETERMINISTIC'] = (
+            '1' if mode in ('strict', 'checkpoint') else '0'
+        )
+        if mode in ('strict', 'checkpoint'):
+            os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+        if mode == 'strict' and not args.smoke and args.num_workers != 4:
+            ap.error('strict 模式的 c8 近似复刻固定 --num-workers 4')
         if not self.AVAILABLE_GPUS:
             os.environ['CUDA_VISIBLE_DEVICES'] = ''
         elif not self.PARALLEL_EXPERIMENTS:
@@ -3491,6 +3627,13 @@ class BatchRunner(TopoDiSEExperiment):
         pass  # runtime state belongs to this batch instance
         sections = ['main_tasks', 'ablation', 'dm_transfer'] if args.section == 'all' else [args.section]
         self.EXPERIMENTS = copy.deepcopy([e for section in sections for e in self.EXPERIMENTS[section]])
+        for experiment in self.EXPERIMENTS:
+            self._apply_reproducibility_mode(
+                experiment, mode,
+                checkpoint_bundle['stage1_checkpoint'] if checkpoint_bundle else None,
+            )
+            if checkpoint_bundle is not None:
+                experiment['parent_checkpoint_sha256'] = checkpoint_bundle['stage1_sha256']
 
         exps = self._filter_experiments(self.EXPERIMENTS)
         if args.groups:
@@ -3499,8 +3642,21 @@ class BatchRunner(TopoDiSEExperiment):
             if unknown:
                 ap.error(f'Unknown or excluded groups: {sorted(unknown)}')
             exps = [e for e in exps if e['_group'] in selected]
+        if args.stage2_kfold_repeats is not None:
+            if args.stage2_kfold_repeats < 1:
+                ap.error('--stage2-kfold-repeats must be positive')
+            def apply_stage2_kfold_repeats(node):
+                overrides = node.get('stage2_overrides')
+                if isinstance(overrides, dict):
+                    overrides['kfold_repeats'] = args.stage2_kfold_repeats
+                for child in node.get('oracle_experiments') or []:
+                    apply_stage2_kfold_repeats(child)
+            for exp in exps:
+                apply_stage2_kfold_repeats(exp)
         if not exps:
             ap.error('No experiments selected')
+        if mode == 'checkpoint' and any(2 not in exp.get('stages', []) for exp in exps):
+            ap.error('checkpoint 模式只能运行包含 Stage2 的实验')
         if args.list:
             for exp in exps:
                 print(f"{exp['_group']}: {exp.get('_desc', '')}")
@@ -3522,6 +3678,11 @@ class BatchRunner(TopoDiSEExperiment):
             print('WARNING: parallel scheduling is enabled but no GPU ids are configured; '
                   'experiments will run serially unless RUN_AVAILABLE_GPUS is set.')
         print(f'auto_resume={self.AUTO_RESUME}')
+        print(f'reproducibility={mode}')
+        if checkpoint_bundle:
+            print(f"checkpoint_dir={checkpoint_bundle['checkpoint_dir']}")
+            print(f"stage1_checkpoint={checkpoint_bundle['stage1_checkpoint']}")
+            print(f"stage1_sha256={checkpoint_bundle['stage1_sha256']}")
         print(f'codes_root={self.PROJECT_ROOT}')
         print(f'datasets_root={self.DATASETS_ROOT}')
         print(f'output_base_dir={self.OUTPUT_BASE_DIR}')
@@ -3545,28 +3706,6 @@ class BatchRunner(TopoDiSEExperiment):
 
         # ---- Stage0/1 共享预训练去重计划（从未经 smoke 修改的原始配方构建）----
         pre_index, pre_assign = self._build_pretrain_index(exps)
-
-        # ---- 跨批次复用：相同配方若已在 results 目录里训练过，直接复用其 Stage1 ckpt ----
-        # 在 smoke 模式下不复用（smoke 用极小配方，复用真实 ckpt 无意义）。
-        if self.REUSE_PRETRAIN and not args.smoke and pre_index:
-            reused_keys: List[str] = []
-            for key in list(pre_index.keys()):
-                ckpt = self._find_existing_pretrain_ckpt(key)
-                if not ckpt:
-                    continue
-                members = [g for g, k in pre_assign.items() if k == key]
-                for e in exps:
-                    if e['_group'] in members:
-                        e['parent_ckpt_override'] = ckpt
-                        e['stages'] = [2]  # 复用已有预训练，下游只跑 stage2
-                print(f"[reuse] 复用已有 Stage0/1 预训练 (recipe {key}) → 跳过重训\n"
-                      f"        ckpt = {ckpt}\n"
-                      f"        受益实验: {', '.join(members)}")
-                del pre_index[key]          # 该配方不再进入 Phase1 预训练
-                reused_keys.append(key)
-            if reused_keys:
-                print(f"[reuse] 共复用 {len(reused_keys)} 个已有预训练配方，"
-                      f"剩余 {len(pre_index)} 个需新训练")
 
         pre_exps: List[Dict[str, Any]] = []
         for key, rec in pre_index.items():
@@ -3614,11 +3753,6 @@ class BatchRunner(TopoDiSEExperiment):
                     e['parent_ckpt_override'] = shared_stage1[key]
                     e['stages'] = [2]  # 预训练已完成，下游只跑 stage2
                 elif key:
-                    # 若该实验已通过跨批次复用拿到父 ckpt（key 不在本批 pre_exps 内），
-                    # 则不是错误，跳过告警。
-                    _reused = e.get('parent_ckpt_override')
-                    if _reused and os.path.exists(self._resolve_project_path(_reused)):
-                        continue
                     print(f"  [dedup][warn] {e['_group']} 的预训练(key={key}) 未产出 ckpt; "
                           f"将就地补跑 Stage0/1（auto-fallback）")
 
@@ -3629,6 +3763,8 @@ class BatchRunner(TopoDiSEExperiment):
         merged_summary = self._save_batch_summary(args.output_dir, {
             'site': self.RUN_SITE, 'gpus': self.AVAILABLE_GPUS,
             'parallel': self.PARALLEL_EXPERIMENTS,
+            'reproducibility': mode,
+            'checkpoint_bundle': checkpoint_bundle,
             'pretrain_recipes': len(pre_exps),
             'total_elapsed_s': time.time() - t0,
             'experiments': all_summaries,
@@ -3649,6 +3785,7 @@ def main(argv=None):
         'BATCH_TAG': BATCH_TAG,
         'CONCURRENCY_PER_GPU': CONCURRENCY_PER_GPU,
         'CORN1_ROOT': CORN1_ROOT,
+        'CHECKPOINT_DIR': CHECKPOINT_DIR,
         'DATASETS_ROOT': DATASETS_ROOT,
         'DEFAULT_STAGE0_OVERRIDES': DEFAULT_STAGE0_OVERRIDES,
         'DEFAULT_STAGE1_OVERRIDES': DEFAULT_STAGE1_OVERRIDES,
@@ -3663,10 +3800,8 @@ def main(argv=None):
         'PAPER_SECTION': PAPER_SECTION,
         'PARALLEL_EXPERIMENTS': PARALLEL_EXPERIMENTS,
         'PD_JSON': PD_JSON,
-        'PRETRAIN_SEARCH_DIRS': PRETRAIN_SEARCH_DIRS,
         'PROJECT_ROOT': PROJECT_ROOT,
         'RESUME_SEARCH_DIRS': RESUME_SEARCH_DIRS,
-        'REUSE_PRETRAIN': REUSE_PRETRAIN,
         'RUN_AUTO_RESUME': RUN_AUTO_RESUME,
         'RUN_CONCURRENCY_PER_GPU': RUN_CONCURRENCY_PER_GPU,
         'RUN_GROUPS': RUN_GROUPS,
