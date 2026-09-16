@@ -1,0 +1,19 @@
+{
+  "experiment_id": "E04",
+  "title": "无相似度门控",
+  "priority": "core",
+  "guide_section": 8,
+  "variants": [
+    {
+      "variant_id": "E04.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_gate_mode": "none"
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

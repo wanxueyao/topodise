@@ -1,0 +1,19 @@
+{
+  "experiment_id": "F02",
+  "title": "TD-rest",
+  "priority": "core",
+  "guide_section": 9,
+  "variants": [
+    {
+      "variant_id": "F02.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "ensemble",
+      "tasks": [
+        "pd_subtype_tdrest"
+      ],
+      "priority": "core"
+    }
+  ]
+}

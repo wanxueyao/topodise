@@ -339,6 +339,10 @@ def build_paper_config(exp, device="cpu", num_workers=0):
     return cfg
 
 
+from utils.experiment_reporting import with_patient_report
+
+
+@with_patient_report
 def run_paper_experiment(exp, output_dir, device="cpu", num_workers=0):
     exp = resolve_baseline_tasks(exp)
     cfg = build_paper_config(exp, device, num_workers)

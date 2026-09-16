@@ -1,0 +1,22 @@
+{
+  "experiment_id": "C02",
+  "title": "两分支共享骨干权重",
+  "priority": "core",
+  "guide_section": 6,
+  "variants": [
+    {
+      "variant_id": "C02.default",
+      "stage0": {
+        "extensions": {
+          "architecture": {
+            "shared_branches": true
+          }
+        }
+      },
+      "stage1": {},
+      "stage2": {},
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

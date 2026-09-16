@@ -1,0 +1,19 @@
+{
+  "experiment_id": "D09",
+  "title": "打乱图像统计对应关系",
+  "priority": "supplementary",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D09.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "shuffle_morphology_features": true
+      },
+      "requires": "stats",
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

@@ -1,0 +1,170 @@
+{
+  "experiment_id": "D18",
+  "title": "TD 类额外权重及 focal gamma 的预定小网格",
+  "priority": "supplementary",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D18.w1_g1",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "class_weight_multipliers": [
+          1.0,
+          1.0
+        ],
+        "focal_gamma": 1.0
+      },
+      "tasks": [
+        "pd_subtype_tdrest"
+      ],
+      "kind": "train",
+      "priority": "supplementary",
+      "requires": "focal_and_weights"
+    },
+    {
+      "variant_id": "D18.w1_g2",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "class_weight_multipliers": [
+          1.0,
+          1.0
+        ],
+        "focal_gamma": 2.0
+      },
+      "tasks": [
+        "pd_subtype_tdrest"
+      ],
+      "kind": "train",
+      "priority": "supplementary",
+      "requires": "focal_and_weights"
+    },
+    {
+      "variant_id": "D18.w1_g3",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "class_weight_multipliers": [
+          1.0,
+          1.0
+        ],
+        "focal_gamma": 3.0
+      },
+      "tasks": [
+        "pd_subtype_tdrest"
+      ],
+      "kind": "train",
+      "priority": "supplementary",
+      "requires": "focal_and_weights"
+    },
+    {
+      "variant_id": "D18.w1.5_g1",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "class_weight_multipliers": [
+          1.5,
+          1.0
+        ],
+        "focal_gamma": 1.0
+      },
+      "tasks": [
+        "pd_subtype_tdrest"
+      ],
+      "kind": "train",
+      "priority": "supplementary",
+      "requires": "focal_and_weights"
+    },
+    {
+      "variant_id": "D18.w1.5_g2",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "class_weight_multipliers": [
+          1.5,
+          1.0
+        ],
+        "focal_gamma": 2.0
+      },
+      "tasks": [
+        "pd_subtype_tdrest"
+      ],
+      "kind": "train",
+      "priority": "supplementary",
+      "requires": "focal_and_weights"
+    },
+    {
+      "variant_id": "D18.w1.5_g3",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "class_weight_multipliers": [
+          1.5,
+          1.0
+        ],
+        "focal_gamma": 3.0
+      },
+      "tasks": [
+        "pd_subtype_tdrest"
+      ],
+      "kind": "train",
+      "priority": "supplementary",
+      "requires": "focal_and_weights"
+    },
+    {
+      "variant_id": "D18.w2_g1",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "class_weight_multipliers": [
+          2.0,
+          1.0
+        ],
+        "focal_gamma": 1.0
+      },
+      "tasks": [
+        "pd_subtype_tdrest"
+      ],
+      "kind": "train",
+      "priority": "supplementary",
+      "requires": "focal_and_weights"
+    },
+    {
+      "variant_id": "D18.w2_g2",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "class_weight_multipliers": [
+          2.0,
+          1.0
+        ],
+        "focal_gamma": 2.0
+      },
+      "tasks": [
+        "pd_subtype_tdrest"
+      ],
+      "kind": "train",
+      "priority": "supplementary",
+      "requires": "focal_and_weights"
+    },
+    {
+      "variant_id": "D18.w2_g3",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "class_weight_multipliers": [
+          2.0,
+          1.0
+        ],
+        "focal_gamma": 3.0
+      },
+      "tasks": [
+        "pd_subtype_tdrest"
+      ],
+      "kind": "train",
+      "priority": "supplementary",
+      "requires": "focal_and_weights"
+    }
+  ]
+}

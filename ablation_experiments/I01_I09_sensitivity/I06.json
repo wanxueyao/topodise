@@ -1,0 +1,107 @@
+{
+  "experiment_id": "I06",
+  "title": "扩散强度",
+  "priority": "supplementary",
+  "guide_section": 12,
+  "variants": [
+    {
+      "variant_id": "I06.t50",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_T_aug": 50
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I06.t100",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_T_aug": 100
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I06.t200",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_T_aug": 200
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I06.fdiff_k_aug_1",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_k_aug": 1
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I06.fdiff_k_aug_2",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_k_aug": 2
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I06.fdiff_k_aug_4",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_k_aug": 4
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I06.fdiff_gate_threshold_0.7",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_gate_threshold": 0.7
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I06.fdiff_gate_threshold_0.85",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_gate_threshold": 0.85
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I06.fdiff_gate_threshold_0.95",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_gate_threshold": 0.95
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

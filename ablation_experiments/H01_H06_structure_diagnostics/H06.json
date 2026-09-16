@@ -1,0 +1,16 @@
+{
+  "experiment_id": "H06",
+  "title": "特征空间与区域可分性",
+  "priority": "supplementary",
+  "guide_section": 11,
+  "variants": [
+    {
+      "variant_id": "H06.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "region_probe",
+      "priority": "supplementary"
+    }
+  ]
+}

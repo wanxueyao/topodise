@@ -1,0 +1,16 @@
+{
+  "experiment_id": "H03",
+  "title": "冻结结构描述量回归",
+  "priority": "core",
+  "guide_section": 11,
+  "variants": [
+    {
+      "variant_id": "H03.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "descriptor_probe",
+      "priority": "core"
+    }
+  ]
+}

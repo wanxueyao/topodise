@@ -1,0 +1,19 @@
+{
+  "experiment_id": "D16",
+  "title": "focal 改为加权 CE",
+  "priority": "core",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D16.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "use_focal": false
+      },
+      "requires": "focal",
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

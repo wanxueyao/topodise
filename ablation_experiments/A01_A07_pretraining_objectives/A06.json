@@ -1,0 +1,30 @@
+{
+  "experiment_id": "A06",
+  "title": "Stage0 GT 的独立贡献",
+  "priority": "core",
+  "guide_section": 4,
+  "variants": [
+    {
+      "variant_id": "A06.gt_on",
+      "stage0": {
+        "lambda_topo": 0.1
+      },
+      "stage1": {},
+      "stage2": {},
+      "skip_stage1": true,
+      "kind": "pretrain_probe",
+      "priority": "core"
+    },
+    {
+      "variant_id": "A06.gt_off",
+      "stage0": {
+        "lambda_topo": 0
+      },
+      "stage1": {},
+      "stage2": {},
+      "skip_stage1": true,
+      "kind": "pretrain_probe",
+      "priority": "core"
+    }
+  ]
+}

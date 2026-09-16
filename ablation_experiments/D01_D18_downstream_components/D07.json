@@ -1,0 +1,19 @@
+{
+  "experiment_id": "D07",
+  "title": "无图像统计",
+  "priority": "core",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D07.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "use_morphology_features": false
+      },
+      "requires": "stats",
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

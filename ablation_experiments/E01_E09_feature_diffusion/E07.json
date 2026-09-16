@@ -1,0 +1,19 @@
+{
+  "experiment_id": "E07",
+  "title": "无特征去噪损失",
+  "priority": "supplementary",
+  "guide_section": 8,
+  "variants": [
+    {
+      "variant_id": "E07.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "lambda_fdiff": 0.0
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

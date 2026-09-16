@@ -1,0 +1,47 @@
+{
+  "experiment_id": "B02",
+  "title": "Stage0：presence-only、core-only、presence+core",
+  "priority": "core",
+  "guide_section": 5,
+  "variants": [
+    {
+      "variant_id": "B02.presence",
+      "stage0": {
+        "extensions": {
+          "target_channels": "presence"
+        }
+      },
+      "stage1": {},
+      "stage2": {},
+      "skip_stage1": true,
+      "kind": "pretrain_probe",
+      "priority": "core"
+    },
+    {
+      "variant_id": "B02.core",
+      "stage0": {
+        "extensions": {
+          "target_channels": "core"
+        }
+      },
+      "stage1": {},
+      "stage2": {},
+      "skip_stage1": true,
+      "kind": "pretrain_probe",
+      "priority": "core"
+    },
+    {
+      "variant_id": "B02.both",
+      "stage0": {
+        "extensions": {
+          "target_channels": "both"
+        }
+      },
+      "stage1": {},
+      "stage2": {},
+      "skip_stage1": true,
+      "kind": "pretrain_probe",
+      "priority": "core"
+    }
+  ]
+}

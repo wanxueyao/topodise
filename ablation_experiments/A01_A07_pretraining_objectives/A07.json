@@ -1,0 +1,76 @@
+{
+  "experiment_id": "A07",
+  "title": "A07",
+  "priority": "supplementary",
+  "guide_section": 4,
+  "variants": [
+    {
+      "variant_id": "A07.00",
+      "stage0": {
+        "lambda_topo": 0.0
+      },
+      "stage1": {
+        "lambda_topo": 0.0,
+        "extensions": {
+          "reset_topology_head": true,
+          "train_topology_head": false
+        }
+      },
+      "stage2": {},
+      "reference_id": "R-RESET11",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "A07.01",
+      "stage0": {
+        "lambda_topo": 0.0
+      },
+      "stage1": {
+        "lambda_topo": 0.05,
+        "extensions": {
+          "reset_topology_head": true,
+          "train_topology_head": true
+        }
+      },
+      "stage2": {},
+      "reference_id": "R-RESET11",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "A07.10",
+      "stage0": {
+        "lambda_topo": 0.1
+      },
+      "stage1": {
+        "lambda_topo": 0.0,
+        "extensions": {
+          "reset_topology_head": true,
+          "train_topology_head": false
+        }
+      },
+      "stage2": {},
+      "reference_id": "R-RESET11",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "A07.11",
+      "stage0": {
+        "lambda_topo": 0.1
+      },
+      "stage1": {
+        "lambda_topo": 0.05,
+        "extensions": {
+          "reset_topology_head": true,
+          "train_topology_head": true
+        }
+      },
+      "stage2": {},
+      "reference_id": "R-RESET11",
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

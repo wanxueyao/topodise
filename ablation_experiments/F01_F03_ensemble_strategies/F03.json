@@ -1,0 +1,20 @@
+{
+  "experiment_id": "F03",
+  "title": "不确定性与失败样本",
+  "priority": "supplementary",
+  "guide_section": 9,
+  "variants": [
+    {
+      "variant_id": "F03.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "ensemble",
+      "tasks": [
+        "pd_stage",
+        "pd_subtype_tdrest"
+      ],
+      "priority": "supplementary"
+    }
+  ]
+}

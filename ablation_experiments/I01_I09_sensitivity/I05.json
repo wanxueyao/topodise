@@ -1,0 +1,38 @@
+{
+  "experiment_id": "I05",
+  "title": "适配器秩",
+  "priority": "supplementary",
+  "guide_section": 12,
+  "variants": [
+    {
+      "variant_id": "I05.r16",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "adapter_rank": 16
+      },
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I05.r32",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "adapter_rank": 32
+      },
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I05.r64",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "adapter_rank": 64
+      },
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

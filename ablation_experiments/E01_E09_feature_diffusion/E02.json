@@ -1,0 +1,22 @@
+{
+  "experiment_id": "E02",
+  "title": "高斯特征扰动替代",
+  "priority": "core",
+  "guide_section": 8,
+  "variants": [
+    {
+      "variant_id": "E02.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "lambda_fdiff": 0.0,
+        "extensions": {
+          "feature_generator": "gaussian"
+        }
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

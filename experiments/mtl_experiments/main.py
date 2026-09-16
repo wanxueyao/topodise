@@ -606,7 +606,9 @@ class FoldTrainer:
             if improved:
                 self.best_val_score = val_score
                 self.patience_counter = 0
-                best_val_metrics = val_metrics.copy()
+                from utils.experiment_reporting import snapshot_selected_predictions
+                best_val_metrics = snapshot_selected_predictions(
+                    val_metrics, os.path.join(self.fold_dir, 'selected_patient_predictions'))
                 torch.save(self.model.state_dict(), self.best_ckpt)
 
             now = datetime.now().strftime('%H:%M:%S')
@@ -899,6 +901,10 @@ def build_paper_config(exp, device="cpu", num_workers=0):
     return config
 
 
+from utils.experiment_reporting import with_patient_report
+
+
+@with_patient_report
 def run_paper_experiment(exp, output_dir, device="cpu", num_workers=0):
     exp = resolve_baseline_tasks(exp)
     cfg = build_paper_config(exp, device, num_workers)

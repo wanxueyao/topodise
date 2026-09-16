@@ -29,4 +29,4 @@ unet/logs/
 datasets/
 
 # External pretrained weights (documented download/place path)
-experiments/unified_stage2_encoder_comparison/pretrained/
+ablation_experiments/G01_G05_encoder_comparison/pretrained/

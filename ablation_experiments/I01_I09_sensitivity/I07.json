@@ -1,0 +1,86 @@
+{
+  "experiment_id": "I07",
+  "title": "无标签数据效率",
+  "priority": "supplementary",
+  "guide_section": 12,
+  "variants": [
+    {
+      "variant_id": "I07.p25_fixed_steps",
+      "stage0": {},
+      "stage1": {
+        "extensions": {
+          "unlabeled_fraction": 0.25,
+          "data_budget": "fixed_steps"
+        }
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I07.p25_natural_epoch",
+      "stage0": {},
+      "stage1": {
+        "extensions": {
+          "unlabeled_fraction": 0.25,
+          "data_budget": "natural_epoch"
+        }
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I07.p50_fixed_steps",
+      "stage0": {},
+      "stage1": {
+        "extensions": {
+          "unlabeled_fraction": 0.5,
+          "data_budget": "fixed_steps"
+        }
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I07.p50_natural_epoch",
+      "stage0": {},
+      "stage1": {
+        "extensions": {
+          "unlabeled_fraction": 0.5,
+          "data_budget": "natural_epoch"
+        }
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I07.p100_fixed_steps",
+      "stage0": {},
+      "stage1": {
+        "extensions": {
+          "unlabeled_fraction": 1.0,
+          "data_budget": "fixed_steps"
+        }
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I07.p100_natural_epoch",
+      "stage0": {},
+      "stage1": {
+        "extensions": {
+          "unlabeled_fraction": 1.0,
+          "data_budget": "natural_epoch"
+        }
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

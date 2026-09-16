@@ -1,0 +1,16 @@
+{
+  "experiment_id": "G04",
+  "title": "编码器 × 冻结小型 MLP",
+  "priority": "pending",
+  "guide_section": 10,
+  "variants": [
+    {
+      "variant_id": "G04.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "mlp_probe",
+      "priority": "pending"
+    }
+  ]
+}

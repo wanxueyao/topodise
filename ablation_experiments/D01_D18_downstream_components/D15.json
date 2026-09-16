@@ -1,0 +1,19 @@
+{
+  "experiment_id": "D15",
+  "title": "去类别权重",
+  "priority": "core",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D15.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "use_class_weights": false
+      },
+      "requires": "class_weights",
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

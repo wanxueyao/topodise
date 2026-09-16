@@ -1,0 +1,18 @@
+{
+  "experiment_id": "A03",
+  "title": "无 Stage1 结构约束",
+  "priority": "core",
+  "guide_section": 4,
+  "variants": [
+    {
+      "variant_id": "A03.default",
+      "stage0": {},
+      "stage1": {
+        "lambda_topo": 0.0
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

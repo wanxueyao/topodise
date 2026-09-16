@@ -1,0 +1,20 @@
+{
+  "experiment_id": "A05",
+  "title": "全程无结构监督",
+  "priority": "core",
+  "guide_section": 4,
+  "variants": [
+    {
+      "variant_id": "A05.default",
+      "stage0": {
+        "lambda_topo": 0.0
+      },
+      "stage1": {
+        "lambda_topo": 0.0
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

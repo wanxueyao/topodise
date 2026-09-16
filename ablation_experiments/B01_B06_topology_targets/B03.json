@@ -1,0 +1,44 @@
+{
+  "experiment_id": "B03",
+  "title": "Stage1：均值阈值-only、均值+标准差-only、双阈值",
+  "priority": "core",
+  "guide_section": 5,
+  "variants": [
+    {
+      "variant_id": "B03.presence",
+      "stage0": {},
+      "stage1": {
+        "extensions": {
+          "target_channels": "presence"
+        }
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "core"
+    },
+    {
+      "variant_id": "B03.core",
+      "stage0": {},
+      "stage1": {
+        "extensions": {
+          "target_channels": "core"
+        }
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "core"
+    },
+    {
+      "variant_id": "B03.both",
+      "stage0": {},
+      "stage1": {
+        "extensions": {
+          "target_channels": "both"
+        }
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "experiment_id": "H05",
+  "title": "跨阶段结构信息变化",
+  "priority": "core",
+  "guide_section": 11,
+  "variants": [
+    {
+      "variant_id": "H05.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "stage_probe",
+      "priority": "core"
+    }
+  ]
+}

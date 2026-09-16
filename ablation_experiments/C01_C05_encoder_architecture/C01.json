@@ -1,0 +1,22 @@
+{
+  "experiment_id": "C01",
+  "title": "去 cross-attention",
+  "priority": "core",
+  "guide_section": 6,
+  "variants": [
+    {
+      "variant_id": "C01.default",
+      "stage0": {
+        "extensions": {
+          "architecture": {
+            "fusion": "concat_pool"
+          }
+        }
+      },
+      "stage1": {},
+      "stage2": {},
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

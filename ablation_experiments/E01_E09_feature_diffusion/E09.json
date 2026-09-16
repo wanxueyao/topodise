@@ -1,0 +1,64 @@
+{
+  "experiment_id": "E09",
+  "title": "E09",
+  "priority": "supplementary",
+  "guide_section": 8,
+  "variants": [
+    {
+      "variant_id": "E09.00",
+      "stage0": {
+        "lambda_simple": 0.0
+      },
+      "stage1": {},
+      "stage2": {
+        "use_feature_diffusion": false,
+        "lambda_fdiff": 0.0,
+        "lambda_ce_aug": 0.0,
+        "proto_fdiff_support_aug": 0,
+        "proto_fdiff_support_aug_by_class": []
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "E09.01",
+      "stage0": {
+        "lambda_simple": 0.0
+      },
+      "stage1": {},
+      "stage2": {},
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "E09.10",
+      "stage0": {
+        "lambda_simple": 1.0
+      },
+      "stage1": {},
+      "stage2": {
+        "use_feature_diffusion": false,
+        "lambda_fdiff": 0.0,
+        "lambda_ce_aug": 0.0,
+        "proto_fdiff_support_aug": 0,
+        "proto_fdiff_support_aug_by_class": []
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "E09.11",
+      "stage0": {
+        "lambda_simple": 1.0
+      },
+      "stage1": {},
+      "stage2": {},
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

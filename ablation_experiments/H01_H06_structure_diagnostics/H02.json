@@ -1,0 +1,16 @@
+{
+  "experiment_id": "H02",
+  "title": "冻结结构网格线性探针",
+  "priority": "core",
+  "guide_section": 11,
+  "variants": [
+    {
+      "variant_id": "H02.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "structure_probe",
+      "priority": "core"
+    }
+  ]
+}

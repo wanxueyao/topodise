@@ -1,0 +1,16 @@
+{
+  "experiment_id": "G02",
+  "title": "编码器 × 冻结线性分类",
+  "priority": "core",
+  "guide_section": 10,
+  "variants": [
+    {
+      "variant_id": "G02.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "linear_probe",
+      "priority": "core"
+    }
+  ]
+}

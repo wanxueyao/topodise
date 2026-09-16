@@ -1,0 +1,34 @@
+{
+  "experiment_id": "D17",
+  "title": "balanced accuracy 与 accuracy 选择 checkpoint",
+  "priority": "core",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D17.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "early_stopping": false,
+        "extensions": {
+          "record_trajectory": true
+        }
+      },
+      "requires": "balanced_selection",
+      "kind": "selection_trajectory",
+      "reference_id": "R-SELECT",
+      "priority": "core"
+    },
+    {
+      "variant_id": "D17.early_stop",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "select_metric": "patient"
+      },
+      "requires": "balanced_selection",
+      "priority": "supplementary",
+      "kind": "train"
+    }
+  ]
+}

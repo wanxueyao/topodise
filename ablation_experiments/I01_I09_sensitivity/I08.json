@@ -1,0 +1,86 @@
+{
+  "experiment_id": "I08",
+  "title": "下游标注效率",
+  "priority": "supplementary",
+  "guide_section": 12,
+  "variants": [
+    {
+      "variant_id": "I08.p25_fixed_steps",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "extensions": {
+          "label_fraction": 0.25,
+          "matched_label_budget": true
+        }
+      },
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I08.p25_natural_epoch",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "extensions": {
+          "label_fraction": 0.25,
+          "matched_label_budget": false
+        }
+      },
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I08.p50_fixed_steps",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "extensions": {
+          "label_fraction": 0.5,
+          "matched_label_budget": true
+        }
+      },
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I08.p50_natural_epoch",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "extensions": {
+          "label_fraction": 0.5,
+          "matched_label_budget": false
+        }
+      },
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I08.p100_fixed_steps",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "extensions": {
+          "label_fraction": 1.0,
+          "matched_label_budget": true
+        }
+      },
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I08.p100_natural_epoch",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "extensions": {
+          "label_fraction": 1.0,
+          "matched_label_budget": false
+        }
+      },
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

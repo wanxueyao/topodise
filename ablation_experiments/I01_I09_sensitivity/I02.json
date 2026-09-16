@@ -1,0 +1,20 @@
+{
+  "experiment_id": "I02",
+  "title": "Stage1 结构头策略",
+  "priority": "supplementary",
+  "guide_section": 12,
+  "variants": [
+    {
+      "variant_id": "I02.default",
+      "stage0": {},
+      "stage1": {
+        "extensions": {
+          "train_topology_head": true
+        }
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

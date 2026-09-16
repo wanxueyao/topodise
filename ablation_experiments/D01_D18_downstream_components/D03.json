@@ -1,0 +1,20 @@
+{
+  "experiment_id": "D03",
+  "title": "无适配器且无融合微调",
+  "priority": "core",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D03.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "use_adapters": false,
+        "finetune_fusion": false
+      },
+      "requires": "fusion",
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

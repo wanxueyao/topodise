@@ -1,0 +1,23 @@
+{
+  "experiment_id": "E01",
+  "title": "无 Stage2 特征扩散",
+  "priority": "core",
+  "guide_section": 8,
+  "variants": [
+    {
+      "variant_id": "E01.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "use_feature_diffusion": false,
+        "lambda_fdiff": 0.0,
+        "lambda_ce_aug": 0.0,
+        "proto_fdiff_support_aug": 0,
+        "proto_fdiff_support_aug_by_class": []
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

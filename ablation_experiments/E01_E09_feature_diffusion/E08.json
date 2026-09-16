@@ -1,0 +1,52 @@
+{
+  "experiment_id": "E08",
+  "title": "门控方式 hard/soft、类别范围全体/少数类",
+  "priority": "supplementary",
+  "guide_section": 8,
+  "variants": [
+    {
+      "variant_id": "E08.hard_cos",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_gate_mode": "hard_cos"
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "E08.soft_cos",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_gate_mode": "soft_cos"
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "E08.minority",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_minority_only": true
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "E08.all_classes",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "fdiff_minority_only": false
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

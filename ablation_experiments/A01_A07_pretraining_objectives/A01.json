@@ -1,0 +1,25 @@
+{
+  "experiment_id": "A01",
+  "title": "无 Stage1",
+  "priority": "core",
+  "guide_section": 4,
+  "variants": [
+    {
+      "variant_id": "A01.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "skip_stage1": true,
+      "kind": "train",
+      "priority": "core"
+    },
+    {
+      "variant_id": "A01.source_continue",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "source_continue",
+      "priority": "supplementary"
+    }
+  ]
+}

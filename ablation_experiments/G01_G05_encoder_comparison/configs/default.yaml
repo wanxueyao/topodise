@@ -1,0 +1,5 @@
+# Data/checkpoint locations only. Decoder hyperparameters are shared with the main method.
+dataset_root: datasets
+encoders:
+  dinov2_vits14:
+    checkpoint: ablation_experiments/G01_G05_encoder_comparison/pretrained/dinov2_vits14.pth

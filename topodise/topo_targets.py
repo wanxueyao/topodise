@@ -119,6 +119,11 @@ def compute_topo_target(x: torch.Tensor, mode: str = "hgrad", out_size: int = 32
         ch1 = (dens > thr).float()                  # denser ridge cores
         return torch.cat([ch0, ch1], dim=1)
 
+    if mode == "hgrad_dual":
+        gradient = F.pad((x[..., 1:] - x[..., :-1]).abs(), (1, 0, 0, 0))
+        return torch.cat([_binarize(gradient, out_size, k=0.0),
+                          _binarize(gradient, out_size, k=1.0)], dim=1)
+
     if mode == "hgrad":
         dx = (x[:, :, :, 1:] - x[:, :, :, :-1]).abs()
         grad_map = F.pad(dx, (1, 0, 0, 0))

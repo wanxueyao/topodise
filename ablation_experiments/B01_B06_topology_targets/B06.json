@@ -1,0 +1,20 @@
+{
+  "experiment_id": "B06",
+  "title": "Stage1 目标空间打乱",
+  "priority": "supplementary",
+  "guide_section": 5,
+  "variants": [
+    {
+      "variant_id": "B06.default",
+      "stage0": {},
+      "stage1": {
+        "extensions": {
+          "shuffle_target": true
+        }
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

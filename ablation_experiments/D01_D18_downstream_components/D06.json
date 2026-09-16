@@ -1,0 +1,21 @@
+{
+  "experiment_id": "D06",
+  "title": "图像对训练后患者聚合",
+  "priority": "supplementary",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D06.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "extensions": {
+          "instance_training": true
+        },
+        "mil_pooling": "mean"
+      },
+      "priority": "supplementary",
+      "kind": "train"
+    }
+  ]
+}

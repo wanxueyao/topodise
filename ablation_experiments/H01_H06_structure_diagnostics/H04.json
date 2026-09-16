@@ -1,0 +1,16 @@
+{
+  "experiment_id": "H04",
+  "title": "最近邻检索",
+  "priority": "core",
+  "guide_section": 11,
+  "variants": [
+    {
+      "variant_id": "H04.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "retrieval",
+      "priority": "core"
+    }
+  ]
+}

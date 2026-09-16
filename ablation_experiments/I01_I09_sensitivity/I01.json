@@ -1,0 +1,20 @@
+{
+  "experiment_id": "I01",
+  "title": "Stage1 更新范围",
+  "priority": "supplementary",
+  "guide_section": 12,
+  "variants": [
+    {
+      "variant_id": "I01.default",
+      "stage0": {},
+      "stage1": {
+        "extensions": {
+          "unfreeze_encoder": true
+        }
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

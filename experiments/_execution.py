@@ -112,6 +112,8 @@ def run_batch(module_name, recipes, *, gpus, concurrency_per_gpu, output_dir, nu
                    for i, gpu in enumerate(slots)]
         results = [row for future in futures for row in future.result()]
     (output / 'batch_summary.json').write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding='utf-8')
+    from utils.experiment_reporting import finalize_batch
+    finalize_batch(output, recipes, results)
     if any(row['status'] != 'success' for row in results):
         raise SystemExit(f'Experiment failures; see {output}/batch_summary.json')
     print(f'Completed {len(results)} recipes: {output}')

@@ -1,0 +1,18 @@
+{
+  "experiment_id": "D13",
+  "title": "support-topk",
+  "priority": "supplementary",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D13.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "replay",
+      "replay_mode": "support_topk",
+      "requires": "prototype",
+      "priority": "supplementary"
+    }
+  ]
+}

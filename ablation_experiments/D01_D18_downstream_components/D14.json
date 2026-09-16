@@ -1,0 +1,33 @@
+{
+  "experiment_id": "D14",
+  "title": "关闭均衡患者包采样",
+  "priority": "core",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D14.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "mil_balanced_bags": false,
+        "extensions": {
+          "matched_sampling_budget": true
+        }
+      },
+      "requires": "balanced",
+      "kind": "train",
+      "priority": "core"
+    },
+    {
+      "variant_id": "D14.natural_epoch",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "mil_balanced_bags": false
+      },
+      "requires": "balanced",
+      "priority": "supplementary",
+      "kind": "train"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "experiment_id": "B04",
+  "title": "Stage1：HGrad-dual、Frangi-dual、Sobel-dual",
+  "priority": "core",
+  "guide_section": 5,
+  "variants": [
+    {
+      "variant_id": "B04.hgrad_dual",
+      "stage0": {},
+      "stage1": {
+        "topo_target": "hgrad_dual"
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "core"
+    },
+    {
+      "variant_id": "B04.frangi_dual",
+      "stage0": {},
+      "stage1": {
+        "topo_target": "frangi_dual"
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "core"
+    },
+    {
+      "variant_id": "B04.sobel_dual",
+      "stage0": {},
+      "stage1": {
+        "topo_target": "sobel_dual"
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

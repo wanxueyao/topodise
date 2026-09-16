@@ -1,0 +1,16 @@
+{
+  "experiment_id": "G05",
+  "title": "统一维度表示对照",
+  "priority": "supplementary",
+  "guide_section": 10,
+  "variants": [
+    {
+      "variant_id": "G05.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "pca_probe",
+      "priority": "supplementary"
+    }
+  ]
+}

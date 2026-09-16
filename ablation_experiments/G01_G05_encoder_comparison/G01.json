@@ -1,0 +1,16 @@
+{
+  "experiment_id": "G01",
+  "title": "编码器 × 完整 Stage2",
+  "priority": "core",
+  "guide_section": 10,
+  "variants": [
+    {
+      "variant_id": "G01.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "encoder_comparison",
+      "priority": "core"
+    }
+  ]
+}

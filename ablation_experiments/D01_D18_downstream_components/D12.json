@@ -1,0 +1,18 @@
+{
+  "experiment_id": "D12",
+  "title": "原型推断规则",
+  "priority": "core",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D12.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "replay",
+      "replay_mode": "mean",
+      "requires": "prototype",
+      "priority": "core"
+    }
+  ]
+}

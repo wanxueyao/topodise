@@ -1,0 +1,46 @@
+{
+  "experiment_id": "C05",
+  "title": "配对方式 zip vs cartesian",
+  "priority": "core",
+  "guide_section": 6,
+  "variants": [
+    {
+      "variant_id": "C05.zip",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "pair_mode": "zip",
+        "extensions": {
+          "matched_pair_budget": true
+        }
+      },
+      "reference_suffix": "matched_pairs",
+      "reference_stage2": {
+        "extensions": {
+          "matched_pair_budget": true
+        }
+      },
+      "kind": "train",
+      "priority": "core"
+    },
+    {
+      "variant_id": "C05.cartesian",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "pair_mode": "cartesian",
+        "extensions": {
+          "matched_pair_budget": true
+        }
+      },
+      "reference_suffix": "matched_pairs",
+      "reference_stage2": {
+        "extensions": {
+          "matched_pair_budget": true
+        }
+      },
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

@@ -1552,6 +1552,10 @@ def dual_subtype_run_dual_stream_subtype_td_rest_experiment(
                                 n_splits, repeats, seed)
 
 
+from utils.experiment_reporting import with_patient_report
+
+
+@with_patient_report
 def run_paper_experiment(exp, output_dir, device='cpu', num_workers=0):
     exp = resolve_baseline_tasks(exp)
     from unet.prerequisites import require_segmented_pd

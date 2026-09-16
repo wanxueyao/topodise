@@ -1,0 +1,16 @@
+{
+  "experiment_id": "H01",
+  "title": "监督目标构造对比",
+  "priority": "core",
+  "guide_section": 11,
+  "variants": [
+    {
+      "variant_id": "H01.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "target_gallery",
+      "priority": "core"
+    }
+  ]
+}

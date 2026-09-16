@@ -1,0 +1,19 @@
+{
+  "experiment_id": "D02",
+  "title": "无融合微调",
+  "priority": "core",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D02.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "finetune_fusion": false
+      },
+      "requires": "fusion",
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

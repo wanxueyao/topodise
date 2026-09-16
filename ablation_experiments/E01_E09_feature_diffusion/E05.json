@@ -1,0 +1,19 @@
+{
+  "experiment_id": "E05",
+  "title": "无增强分类损失",
+  "priority": "core",
+  "guide_section": 8,
+  "variants": [
+    {
+      "variant_id": "E05.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "lambda_ce_aug": 0.0
+      },
+      "requires": "fdiff",
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

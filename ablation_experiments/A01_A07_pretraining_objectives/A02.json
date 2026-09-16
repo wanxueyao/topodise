@@ -1,0 +1,18 @@
+{
+  "experiment_id": "A02",
+  "title": "无 Stage0 图像扩散",
+  "priority": "core",
+  "guide_section": 4,
+  "variants": [
+    {
+      "variant_id": "A02.default",
+      "stage0": {
+        "lambda_simple": 0.0
+      },
+      "stage1": {},
+      "stage2": {},
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

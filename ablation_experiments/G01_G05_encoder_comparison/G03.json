@@ -1,0 +1,16 @@
+{
+  "experiment_id": "G03",
+  "title": "冻结随机编码器参照",
+  "priority": "core",
+  "guide_section": 10,
+  "variants": [
+    {
+      "variant_id": "G03.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "random_probe",
+      "priority": "core"
+    }
+  ]
+}

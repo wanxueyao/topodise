@@ -1,35 +1,12 @@
-"""TopoDiSE: Topology-preserving Diffusion Semantic Encoder for CCM.
+"""TopoDiSE public API with lazy imports for dependency-free planning."""
+from importlib import import_module
 
-See ``brains/TOPODISE_IMPLEMENTATION.md`` for the full design document.
-"""
-from .encoder import TopoDiSEEncoder, EncoderConfig
-from .unet import ConditionalUNet, UNetConfig
-from .topo_head import TopoHead
-from .adapter import ResidualAdapter, attach_adapters
-from .classifier import ClassifierHead, ProjectionHead, CoralHead, PrototypeHead, episodic_proto_loss
-from .diffusion import DiffusionSchedule, q_sample, ddim_sample
-from .feature_diffusion import FeatureDiffusionHead, q_sample_feature
-from .losses import (
-    supcon_loss, focal_bce_loss, focal_ce_loss, region_infonce_loss, nt_xent_loss,
-    coral_loss, coral_predict,
-)
-from .topo_targets import compute_topo_target
-from .ema import ModelEMA
-from .freezing import apply_freeze_policy
-from .logging_utils import TrainLogger, EMAMeter, RateMeter, count_params, grad_global_norm, env_banner
+_EXPORTS = {'TopoDiSEEncoder': 'encoder', 'EncoderConfig': 'encoder', 'ConditionalUNet': 'unet', 'UNetConfig': 'unet', 'TopoHead': 'topo_head', 'ResidualAdapter': 'adapter', 'attach_adapters': 'adapter', 'ClassifierHead': 'classifier', 'ProjectionHead': 'classifier', 'CoralHead': 'classifier', 'PrototypeHead': 'classifier', 'episodic_proto_loss': 'classifier', 'DiffusionSchedule': 'diffusion', 'q_sample': 'diffusion', 'ddim_sample': 'diffusion', 'FeatureDiffusionHead': 'feature_diffusion', 'q_sample_feature': 'feature_diffusion', 'supcon_loss': 'losses', 'focal_bce_loss': 'losses', 'focal_ce_loss': 'losses', 'region_infonce_loss': 'losses', 'nt_xent_loss': 'losses', 'coral_loss': 'losses', 'coral_predict': 'losses', 'compute_topo_target': 'topo_targets', 'ModelEMA': 'ema', 'apply_freeze_policy': 'freezing', 'TrainLogger': 'logging_utils', 'EMAMeter': 'logging_utils', 'RateMeter': 'logging_utils', 'count_params': 'logging_utils', 'grad_global_norm': 'logging_utils', 'env_banner': 'logging_utils'}
+__all__ = list(_EXPORTS)
 
-__all__ = [
-    "TopoDiSEEncoder", "EncoderConfig",
-    "ConditionalUNet", "UNetConfig",
-    "TopoHead",
-    "ResidualAdapter", "attach_adapters",
-    "ClassifierHead", "ProjectionHead", "CoralHead", "PrototypeHead", "episodic_proto_loss",
-    "DiffusionSchedule", "q_sample", "ddim_sample",
-    "FeatureDiffusionHead", "q_sample_feature",
-    "supcon_loss", "focal_bce_loss", "focal_ce_loss", "region_infonce_loss", "nt_xent_loss",
-    "coral_loss", "coral_predict",
-    "compute_topo_target",
-    "ModelEMA",
-    "apply_freeze_policy",
-    "TrainLogger", "EMAMeter", "RateMeter", "count_params", "grad_global_norm", "env_banner",
-]
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    value = getattr(import_module("." + _EXPORTS[name], __name__), name)
+    globals()[name] = value
+    return value

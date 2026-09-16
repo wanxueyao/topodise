@@ -1,0 +1,18 @@
+{
+  "experiment_id": "I03",
+  "title": "Stage1 去噪信号",
+  "priority": "supplementary",
+  "guide_section": 12,
+  "variants": [
+    {
+      "variant_id": "I03.default",
+      "stage0": {},
+      "stage1": {
+        "train_denoiser": true
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

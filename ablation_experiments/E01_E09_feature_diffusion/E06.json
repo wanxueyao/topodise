@@ -1,0 +1,18 @@
+{
+  "experiment_id": "E06",
+  "title": "无生成支持库增强",
+  "priority": "core",
+  "guide_section": 8,
+  "variants": [
+    {
+      "variant_id": "E06.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "replay",
+      "replay_mode": "no_generated_support",
+      "requires": "generated_support",
+      "priority": "core"
+    }
+  ]
+}

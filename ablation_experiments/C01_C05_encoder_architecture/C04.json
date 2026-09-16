@@ -1,0 +1,27 @@
+{
+  "experiment_id": "C04",
+  "title": "只提供 whorl 信息",
+  "priority": "core",
+  "guide_section": 6,
+  "variants": [
+    {
+      "variant_id": "C04.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "extensions": {
+          "region": "whorl",
+          "paired_cohort": true
+        }
+      },
+      "reference_suffix": "paired",
+      "reference_stage2": {
+        "extensions": {
+          "paired_cohort": true
+        }
+      },
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

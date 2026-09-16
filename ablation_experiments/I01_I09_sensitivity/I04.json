@@ -1,0 +1,128 @@
+{
+  "experiment_id": "I04",
+  "title": "预训练损失权重",
+  "priority": "supplementary",
+  "guide_section": 12,
+  "variants": [
+    {
+      "variant_id": "I04.s0_lambda_topo_x0.5",
+      "stage0": {
+        "lambda_topo": 0.05
+      },
+      "stage1": {},
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I04.s0_lambda_topo_x1",
+      "stage0": {
+        "lambda_topo": 0.1
+      },
+      "stage1": {},
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I04.s0_lambda_topo_x2",
+      "stage0": {
+        "lambda_topo": 0.2
+      },
+      "stage1": {},
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I04.s0_lambda_simple_x0.5",
+      "stage0": {
+        "lambda_simple": 0.5
+      },
+      "stage1": {},
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I04.s0_lambda_simple_x1",
+      "stage0": {
+        "lambda_simple": 1.0
+      },
+      "stage1": {},
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I04.s0_lambda_simple_x2",
+      "stage0": {
+        "lambda_simple": 2.0
+      },
+      "stage1": {},
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I04.s1_lambda_topo_x0.5",
+      "stage0": {},
+      "stage1": {
+        "lambda_topo": 0.025
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I04.s1_lambda_topo_x1",
+      "stage0": {},
+      "stage1": {
+        "lambda_topo": 0.05
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I04.s1_lambda_topo_x2",
+      "stage0": {},
+      "stage1": {
+        "lambda_topo": 0.1
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I04.s1_lambda_region_x0.5",
+      "stage0": {},
+      "stage1": {
+        "lambda_region": 0.25
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I04.s1_lambda_region_x1",
+      "stage0": {},
+      "stage1": {
+        "lambda_region": 0.5
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    },
+    {
+      "variant_id": "I04.s1_lambda_region_x2",
+      "stage0": {},
+      "stage1": {
+        "lambda_region": 1.0
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "supplementary"
+    }
+  ]
+}

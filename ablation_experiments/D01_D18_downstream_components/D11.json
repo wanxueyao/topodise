@@ -1,0 +1,18 @@
+{
+  "experiment_id": "D11",
+  "title": "仅原型辅助训练",
+  "priority": "core",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D11.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "replay",
+      "replay_mode": "classifier",
+      "requires": "prototype",
+      "priority": "core"
+    }
+  ]
+}

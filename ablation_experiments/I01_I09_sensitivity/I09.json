@@ -1,0 +1,16 @@
+{
+  "experiment_id": "I09",
+  "title": "运行成本",
+  "priority": "supplementary",
+  "guide_section": 12,
+  "variants": [
+    {
+      "variant_id": "I09.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "cost_report",
+      "priority": "supplementary"
+    }
+  ]
+}

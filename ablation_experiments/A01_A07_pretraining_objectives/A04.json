@@ -1,0 +1,18 @@
+{
+  "experiment_id": "A04",
+  "title": "无 Stage1 区域损失",
+  "priority": "core",
+  "guide_section": 4,
+  "variants": [
+    {
+      "variant_id": "A04.default",
+      "stage0": {},
+      "stage1": {
+        "lambda_region": 0.0
+      },
+      "stage2": {},
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

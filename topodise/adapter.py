@@ -35,9 +35,15 @@ def attach_adapters(encoder: TopoDiSEEncoder, r: int = 64) -> Dict[str, Residual
 
     Returns dict of adapter modules for downstream parameter filtering.
     """
+    if hasattr(encoder, "attach_stage2_adapters"):
+        return encoder.attach_stage2_adapters(r)
     adapters: Dict[str, ResidualAdapter] = {}
+    seen_branches = set()
     for branch_name in ("branch_c", "branch_w"):
         branch = getattr(encoder, branch_name)
+        if id(branch) in seen_branches:
+            continue
+        seen_branches.add(id(branch))
         new_stages = nn.ModuleList()
         for i, stage in enumerate(branch.stages):
             # 推断 stage 输出通道：最后一个含权重的卷积

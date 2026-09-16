@@ -1,0 +1,23 @@
+{
+  "experiment_id": "D10",
+  "title": "完全无原型模块",
+  "priority": "core",
+  "guide_section": 7,
+  "variants": [
+    {
+      "variant_id": "D10.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "use_prototype": false,
+        "lambda_proto": 0.0,
+        "proto_eval_blend": 0.0,
+        "proto_fdiff_support_aug": 0,
+        "proto_fdiff_support_aug_by_class": []
+      },
+      "requires": "prototype",
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

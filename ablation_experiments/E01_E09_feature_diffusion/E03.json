@@ -1,0 +1,21 @@
+{
+  "experiment_id": "E03",
+  "title": "无类别条件",
+  "priority": "core",
+  "guide_section": 8,
+  "variants": [
+    {
+      "variant_id": "E03.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {
+        "extensions": {
+          "zero_class_condition": true
+        }
+      },
+      "requires": "class_condition",
+      "kind": "train",
+      "priority": "core"
+    }
+  ]
+}

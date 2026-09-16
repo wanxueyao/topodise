@@ -1,0 +1,19 @@
+{
+  "experiment_id": "F01",
+  "title": "PD 分期",
+  "priority": "core",
+  "guide_section": 9,
+  "variants": [
+    {
+      "variant_id": "F01.default",
+      "stage0": {},
+      "stage1": {},
+      "stage2": {},
+      "kind": "ensemble",
+      "tasks": [
+        "pd_stage"
+      ],
+      "priority": "core"
+    }
+  ]
+}
