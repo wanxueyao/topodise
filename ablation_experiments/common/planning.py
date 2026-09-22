@@ -29,7 +29,8 @@ def build_plan(specs, output, data, seeds=(42,), tasks=TASKS, repeats=3, unit='C
             return stage_job('stage0',values,[j0])
         c1=asdict(Stage1Config(**STAGE1_SETTINGS));c1.update(seed=seed,parent_ckpt=str(p0),base_path=str(data),pd_json=str(data/'pd_dataset_en/patients_dataset_en.json'),region_pair_manifest=str(data/'unlabeled_dataset_en/unlabeled_dataset_en.json'))
         return stage_job('stage1',merge(c1,spec.get('stage1',{})),[j0])
-    def downstream(spec,seed,reference=False):
+    def downstream(spec,seed,reference=False,applicability_spec=None):
+        applicability_spec = spec if applicability_spec is None else applicability_spec
         parent_id,parent_path=parents(spec,seed)
         bundle=build_full_config(parent_path,output/'unused',data/'pd_dataset_en/patients_dataset_en.json',data,repeats=repeats,tasks=tasks)
         for recipe in bundle['recipes']:
@@ -38,7 +39,7 @@ def build_plan(specs, output, data, seeds=(42,), tasks=TASKS, repeats=3, unit='C
             if not candidates: raise ValueError(f'Missing formal anchor for {task}')
             members=[]
             for candidate in candidates:
-                base=candidate['config'];active=applicable(spec,base)
+                base=candidate['config'];active=applicable(applicability_spec,base)
                 # FINAL retains inactive members, including duplicate-equivalent votes.
                 if not active and unit=='CANDIDATE':
                     views.append(dict(variant_id=spec['variant_id'],task=task,pretrain_seed=seed,status='not_applicable',candidate_id=candidate['name'],evaluation_unit=unit));continue
@@ -71,7 +72,11 @@ def build_plan(specs, output, data, seeds=(42,), tasks=TASKS, repeats=3, unit='C
                 spec={**spec,'reference_variant_id':'A07.11'}
             if spec.get('reference_stage2'):
                 reference.update(variant_id='M0.'+spec['reference_suffix'],stage2=spec['reference_stage2'],reference_suffix=spec['reference_suffix'])
-            downstream(reference,seed,True)
+                # Matched cohorts inherit the originating experiment's domain;
+                # the shared M0.default reference must retain its own applicability.
+                downstream(reference,seed,True,applicability_spec=spec)
+            else:
+                downstream(reference,seed,True)
             downstream(spec,seed)
     unique_views={}
     for view in views:
