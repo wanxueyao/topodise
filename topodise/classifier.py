@@ -123,13 +123,11 @@ class PrototypeHead(nn.Module):
                        support_labels: torch.Tensor, n_classes: int,
                        temp: float = 1.0, mode: str = "support_lse",
                        top_k: int = 3):
-        """Classify against the full support embedding bank.
+        """Classify against the training-fold support embedding bank.
 
-        ``compute_prototypes`` collapses every class into one mean vector. That
-        is brittle for fine-grained PD subtype/stage, where a class can be
-        multi-modal. This method keeps the full training-fold support bank and
-        aggregates class-wise distances with either log-mean-exp (soft nearest
-        prototypes) or top-k averaging (kNN-style prototype classification).
+        The bank contains patient embeddings and configured augmented entries.
+        Top-k selects support entries per class. ``support_lse`` aggregates their
+        scores by log-mean-exp; ``support_topk`` averages their scores.
 
         Returns ``(logits [Q, C], present_mask [C])``.
         """

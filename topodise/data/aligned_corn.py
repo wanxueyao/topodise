@@ -1,4 +1,8 @@
-"""Synchronize GT geometry with x_full without changing image augmentation/RNG."""
+"""Align the GT mask with the independently augmented clean reference x_full.
+
+The encoder views x_central/x_whorl are separate augmentation draws and need not
+share the reference geometry. Mask replay preserves the subsequent image RNG.
+"""
 from copy import deepcopy
 
 import torch
@@ -37,8 +41,10 @@ class AlignedCORN1Dataset(CORN1Dataset):
         path = self.paths[idx]
         with Image.open(path) as source:
             img = source.convert("L")
+        # Save the reference draw so only its geometry is replayed for the mask.
         before = torch.get_rng_state()
         x_full = self.transform(img)
+        # Independent encoder views; neither is forced to align with x_full.
         xc = self.transform(img)
         xw = self.transform_paired(img)
         after = torch.get_rng_state()

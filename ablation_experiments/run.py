@@ -9,7 +9,8 @@ from topodise.training.runtime.protocol import write,lock
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--experiments',nargs='+',default=['all'])
+    parser.add_argument('--experiments',nargs='+',default=['all'],
+                        help='paper for the published component/probe training plan, all for the full registry, or individual IDs')
     parser.add_argument('--include-supplementary',action='store_true')
     parser.add_argument('--only',nargs='+',help='Execute only these groups/IDs/variants and their references/dependencies within the unchanged master plan')
     parser.add_argument('--tasks',nargs='+',choices=TASKS,default=list(TASKS))

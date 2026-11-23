@@ -1,12 +1,14 @@
-"""Topology supervision targets for the Stage0/1 topo head.
+"""Stage-dependent two-channel structural targets for the Stage0/1 topo head.
 
-The legacy ``hgrad`` mode is a single-direction horizontal-gradient placeholder
-(kept for exact numeric parity with old checkpoints). ``sobel`` and ``frangi``
-provide real ridge / vesselness topology targets for the corneal nerve fibers,
-computed on-the-fly with no external dependencies (pure torch, runs on GPU).
+The formal pipeline uses ``gt`` in Stage0 (nerve presence / high pooled mask
+density) and ``hgrad_dual`` in Stage1 (low/high-threshold image-gradient proxies).
+These targets do not directly annotate skeletons, branch points, or connectivity.
 
-All modes return a ``[B, 2, out_size, out_size]`` binary target in {0, 1} so the
-two-channel ``TopoHead`` (skeleton + branch logits) can be supervised directly.
+The legacy ``hgrad`` mode retains its batch-wide single threshold and identical
+channels for numeric parity with historical checkpoints. ``sobel`` and ``frangi``
+provide image-derived gradient / vesselness proxies, not manual nerve labels.
+
+All modes return ``[B, 2, out_size, out_size]`` binary targets in {0, 1}.
 """
 from typing import Sequence
 
@@ -95,16 +97,22 @@ def compute_topo_target(x: torch.Tensor, mode: str = "hgrad", out_size: int = 32
                         mask: torch.Tensor = None) -> torch.Tensor:
     """Build a ``[B, 2, out_size, out_size]`` topology target in {0, 1}.
 
-    Channel 0 ~ skeleton / ridge map, channel 1 ~ branch / ridge-core cue.
+    Channel meanings depend on the selected target mode, not on the head
+    architecture. GT and image-derived proxy channels have distinct semantics.
 
     Modes
     -----
-    - ``hgrad``  : legacy single-direction horizontal-gradient placeholder
-                   (both channels identical; exact numeric parity).
-    - ``sobel``  : ch0 = gradient-magnitude ridge, ch1 = coarser-scale ridge.
-    - ``frangi`` : ch0 = multi-scale Frangi vesselness, ch1 = sparse ridge cores.
+    - ``hgrad``  : legacy absolute horizontal difference, left-zero-padded and
+                   average-pooled, then thresholded at the batch-wide mean;
+                   both channels are identical (historical numeric parity).
+    - ``hgrad_dual`` : the same horizontal response, average-pooled and thresholded
+                   at the per-image mean (ch0) and mean + sample std (ch1).
+    - ``sobel``  : ch0 = gradient-magnitude proxy, ch1 = blurred-gradient proxy.
+    - ``frangi`` : ch0 = vesselness above its per-image mean,
+                   ch1 = vesselness above its per-image mean + sample std.
     - ``gt``     : ground-truth nerve-fiber segmentation ``mask`` ([B,1,H,W] in
-                   {0,1}). ch0 = density>0 region, ch1 = denser ridge cores.
+                   {0,1}). After average pooling, ch0 = density > 0;
+                   ch1 = density > per-image mean + sample std.
     """
     if mode == "gt":
         if mask is None:
@@ -116,10 +124,11 @@ def compute_topo_target(x: torch.Tensor, mode: str = "hgrad", out_size: int = 32
         ch0 = (dens > 0).float()                    # any nerve present
         flat = dens.flatten(1)
         thr = (flat.mean(dim=1, keepdim=True) + flat.std(dim=1, keepdim=True)).view(-1, 1, 1, 1)
-        ch1 = (dens > thr).float()                  # denser ridge cores
+        ch1 = (dens > thr).float()                  # high pooled mask density
         return torch.cat([ch0, ch1], dim=1)
 
     if mode == "hgrad_dual":
+        # 平均池化后逐图阈值化：ch0 > 均值，ch1 > 均值 + 样本标准差。
         gradient = F.pad((x[..., 1:] - x[..., :-1]).abs(), (1, 0, 0, 0))
         return torch.cat([_binarize(gradient, out_size, k=0.0),
                           _binarize(gradient, out_size, k=1.0)], dim=1)
@@ -141,7 +150,7 @@ def compute_topo_target(x: torch.Tensor, mode: str = "hgrad", out_size: int = 32
     if mode == "frangi":
         V = _frangi_vesselness(x, sigmas, beta=beta, c=c)
         ch0 = _binarize(V, out_size, k=0.0)
-        ch1 = _binarize(V, out_size, k=1.0)   # sparser ridge cores / branches
+        ch1 = _binarize(V, out_size, k=1.0)   # high-threshold vesselness proxy
         return torch.cat([ch0, ch1], dim=1)
 
     raise ValueError(f"unknown topo_target mode: {mode}")

@@ -33,6 +33,10 @@ def registry():
 def select(names, include_supplementary=False):
     all_specs = registry()
     selected = []
+    # The paper reports three PD candidate protocols and a Stage0 GT probe.
+    paper = ('M0', 'A01.default', 'A02', 'A03', 'A04', 'A05', 'A06',
+             'C03', 'C04', 'D01', 'D05', 'D07', 'D10', 'D15', 'D16', 'E01')
+    names = [item for name in names for item in (paper if name == 'paper' else (name,))]
     for name in names:
         matches = [s for id,s in all_specs.items() if name in ('all',id,id[0]) or name.startswith(id+'.')]
         if name == 'M0':

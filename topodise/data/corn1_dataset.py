@@ -1,4 +1,4 @@
-"""CORN-1 dataset for stage 0 self-supervised pretraining.
+"""CORN-1 dataset for Stage0 representation pretraining.
 
 Returns (xc, xw, x_full) where (xc, xw) is a pseudo dual-view augmentation pair
 constructed from the same image (since CORN-1 has no central/whorl pairing).

@@ -56,7 +56,14 @@ def extract(manifest,backend,checkpoint,output,protocol='STR-A',inventory=None,d
 
 
 def main(argv=None):
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--manifest',type=Path,required=True);p.add_argument('--encoder',default='topodise');p.add_argument('--checkpoint',type=Path);p.add_argument('--output',type=Path,required=True);p.add_argument('--protocol',choices=['STR-A','STR-B'],default='STR-A');p.add_argument('--pretraining-inventory',type=Path);p.add_argument('--device',default='cpu');a=p.parse_args(argv)
-    extract(json.loads(a.manifest.read_text()),a.encoder,a.checkpoint,a.output,a.protocol,a.pretraining_inventory,a.device)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--manifest',type=Path,required=True);p.add_argument('--encoder',default='topodise');p.add_argument('--checkpoint',type=Path);p.add_argument('--output',type=Path,required=True);p.add_argument('--protocol',choices=['STR-A','STR-B'],default='STR-A');p.add_argument('--pretraining-inventory',type=Path);p.add_argument('--device',default='cpu')
+    p.add_argument('--dataset-root', type=Path, help='Root for relative image and mask paths in the manifest')
+    a=p.parse_args(argv)
+    manifest = json.loads(a.manifest.read_text())
+    if a.dataset_root is not None:
+        for row in manifest['samples']:
+            for key in ('image', 'mask'):
+                row[key] = str(a.dataset_root / row[key])
+    extract(manifest,a.encoder,a.checkpoint,a.output,a.protocol,a.pretraining_inventory,a.device)
 
 if __name__=='__main__': main()

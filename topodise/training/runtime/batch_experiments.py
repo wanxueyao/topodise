@@ -78,12 +78,13 @@ def execute_phase(jobs, root, devices, worker_module="topodise.training.runtime.
             pass
 
 
-def main(argv=None, routes=ROUTES, home=ROOT, default_name="gt_hgrad_dual_full_v1"):
+def main(argv=None, routes=ROUTES, home=ROOT, default_name="gt_hgrad_dual_full_v1",
+         default_tasks=TASKS):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", default=default_name)
     parser.add_argument("--phase", choices=("all", "pretrain", "stage0", "stage1", "stage2", "prepare", "analyze"), default="all")
     parser.add_argument("--variants", nargs="+", choices=tuple(routes), default=list(routes))
-    parser.add_argument("--tasks", nargs="+", choices=TASKS, default=list(TASKS))
+    parser.add_argument("--tasks", nargs="+", choices=TASKS, default=list(default_tasks))
     parser.add_argument("--section", choices=("all", "main_tasks", "dm_transfer"), default=None)
     parser.add_argument("--devices", nargs="+", default=["auto"])
     parser.add_argument("--pretrain-seeds", nargs="+", type=int, default=[42])

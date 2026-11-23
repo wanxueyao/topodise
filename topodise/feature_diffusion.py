@@ -1,9 +1,9 @@
 """Feature-space diffusion augmentation for TopoDiSE Stage 2.
 
-Lightweight conditional MLP that learns to denoise the encoder feature `z`.
-Used to synthesise additional `z_aug` samples in feature space (no image
-decoding required), expanding minority-class coverage on a small downstream
-dataset.
+Lightweight conditional MLP that reconstructs clean pair embeddings from noised
+features. In MIL training, reconstructions are blended with source embeddings
+and pooled for patient classification. Selected H&Y candidates also use them
+to augment the training support bank.
 
 Design choices (see files/topodise_enhancement/topodise_high_accuracy_strategy_20260522.md
 section 3 P0-A for the rationale):

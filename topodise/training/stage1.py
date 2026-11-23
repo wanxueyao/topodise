@@ -341,7 +341,8 @@ def run_single_experiment(cfg: Stage1Config) -> dict:
             with amp_context():
                 z, (cls_c, cls_w), _feats = encoder(xc, xw, return_cls=True)
 
-        # 扩散去噪器默认只记录日志；可选地将生成信号反传到编码器。
+            # 默认仅无梯度计算扩散损失供日志使用，不加入 Stage1 目标。
+            # 可选设置允许该损失通过冻结的去噪器反传至编码器。
             t = torch.randint(0, schedule.T, (B,), device=device)
             noise = torch.randn_like(xc)
             if cfg.train_denoiser:
@@ -354,12 +355,14 @@ def run_single_experiment(cfg: Stage1Config) -> dict:
                     with amp_context():
                         eps_hat = unet(x_t, t, z.detach())
                     L_simple = F.mse_loss(eps_hat.float(), noise.float())
+            # 结构目标从增强后的 central 输入生成，目标本身不参与梯度计算。
             with torch.no_grad():
                 target = current_hooks().target(compute_topo_target, cfg,
                     x=xc, mode=cfg.topo_target, out_size=32,
                     sigmas=tuple(cfg.frangi_sigmas),
                     beta=cfg.frangi_beta, c=cfg.frangi_c,
                 )
+            # 拓扑头参数虽冻结，psi(z) 仍保留向编码器反传的梯度通路。
             with amp_context(), torch.set_grad_enabled(cfg.lambda_topo > 0):
                 psi_logits = topo_head(z)
             L_topo = current_hooks().topology_loss(psi_logits, target, cfg) if cfg.lambda_topo > 0 else z.new_zeros(())

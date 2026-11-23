@@ -34,7 +34,8 @@ def apply_freeze_policy(
             _stat(m, k)
 
     elif policy == "rscp_high":
-        # 阶段 1：冻结 stage1/2，释放 stage3/4 + cross-attn + GN affine
+        # Stage1：释放两个分支的后半 stages、跨区域融合和投影；
+        # 前半 stages 仅释放 GroupNorm 仿射参数。
         for p in encoder.parameters():
             p.requires_grad_(False)
         # 释放后半 stage
@@ -52,7 +53,7 @@ def apply_freeze_policy(
                 p.requires_grad_(True)
         for p in encoder.proj.parameters():
             p.requires_grad_(True)
-        # 早期 GN 仿射放开（feature norm refit）
+        # 前半 branch stages 仅更新 GroupNorm 仿射参数。
         for branch_name in ("branch_c", "branch_w"):
             branch = getattr(encoder, branch_name)
             for i in range(min(len(branch.stages) // 2, len(branch.stages))):
@@ -60,7 +61,7 @@ def apply_freeze_policy(
                     if isinstance(m, nn.GroupNorm):
                         for p in m.parameters():
                             p.requires_grad_(True)
-        # ε_θ, ψ 全部冻结
+        # 冻结去噪器和拓扑头的参数；拓扑头仍可向编码器传递梯度。
         if unet is not None:
             for p in unet.parameters():
                 p.requires_grad_(False)

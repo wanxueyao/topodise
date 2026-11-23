@@ -337,7 +337,11 @@ def _fdiff_anchor(z: torch.Tensor, grad_scale: float) -> torch.Tensor:
 
 
 def _fdiff_gate(z_aug: torch.Tensor, z_ref: torch.Tensor, cfg) -> torch.Tensor:
-    """Gate or blend augmented features back toward the source feature."""
+    """Blend reconstructed and source features using cosine similarity.
+
+    The paper candidates use ``soft_cos`` for continuous blending; ``hard_cos``
+    selects either the reconstruction or the source feature.
+    """
     mode = getattr(cfg, "fdiff_gate_mode", "hard_cos")
     if mode == "none":
         return z_aug
@@ -357,9 +361,10 @@ def _feature_aug_step_mil(z, y, pool, cls_head, fdiff_head, schedule, cfg,
                           threshold_pos_weight=None):
     """Feature diffusion augmentation for a single MIL patient bag.
 
-    Builds augmented *instance* features, then re-pools them to a bag embedding
-    and applies the bag-level supervision. This keeps the augmentation aligned
-    with the MIL training objective instead of image-pair CE.
+    Returns feature-denoising MSE and augmented-bag classification loss.
+    Reconstructed instance features are blended with their source features,
+    pooled by Attention-MIL, and supervised with the task's classification loss
+    (CE or focal loss for the paper candidates).
     """
     device = z.device
     n_inst = z.size(0)
@@ -1158,6 +1163,7 @@ def _run_mil_experiment(cfg: Stage2Config) -> dict:
                 if len(step_logits) >= cfg.mil_bags_per_step or is_last:
                     logits = torch.cat(step_logits, dim=0)
                     yt = torch.tensor(step_labels, device=device, dtype=torch.long)
+                    # Patient classification loss for the configured task.
                     if stage_thresholds:
                         L = _stage_threshold_loss(logits, yt, pos_weight=threshold_pos_weight)
                     elif ordinal:
@@ -1168,7 +1174,7 @@ def _run_mil_experiment(cfg: Stage2Config) -> dict:
                     if step_instance_losses:
                         L = torch.stack(step_instance_losses).mean()
 
-                # 患者嵌入上的辅助分幕原型损失。
+                    # Episodic prototype loss on projected patient embeddings.
                     if proto_head is not None and cfg.lambda_proto > 0 and len(step_embs) >= 2:
                         emb_metric = proto_head(torch.cat(step_embs, dim=0))
                         L_proto = episodic_proto_loss(
@@ -1180,6 +1186,7 @@ def _run_mil_experiment(cfg: Stage2Config) -> dict:
                     L_fdiff = torch.zeros((), device=device)
                     L_ce_aug = torch.zeros((), device=device)
                     if step_fdiff_losses:
+                        # Add feature denoising and augmented-bag classification losses.
                         L_fdiff = torch.stack(step_fdiff_losses).mean()
                         L_ce_aug = torch.stack(step_ce_aug_losses).mean()
                         L = L + cfg.lambda_fdiff * L_fdiff + cfg.lambda_ce_aug * L_ce_aug
@@ -1217,8 +1224,8 @@ def _run_mil_experiment(cfg: Stage2Config) -> dict:
             subtype_correct, subtype_total = 0, 0
             subtype_per_class_correct, subtype_per_class_total = {}, {}
             patient_predictions = []
-                # 基于原型的评估：从训练折构建类别原型（仅限无序任务），
-                # 再与参数化分类头的预测融合。
+            # Build the training-fold support bank, including configured augmented entries.
+            # Paper H&Y candidates use support-LSE predictions from this bank.
             proto_protos = None
             proto_present = None
             support_generated = []

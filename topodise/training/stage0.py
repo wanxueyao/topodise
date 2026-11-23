@@ -1,6 +1,8 @@
-"""Stage0：在 CORN-1 上执行 TopoDiSE 自监督预训练。
+"""Stage0：在 CORN-1 上联合执行 GT 结构监督与扩散噪声预测预训练。
 
 损失：L = lambda_simple * ||eps - eps_hat||^2 + lambda_topo * BCE(psi(z), targets)。
+正式 GT 路径中，x_full 是独立增强的干净参考图；mask 与其几何同步，
+两个编码分支视图分别独立增强。GT 两通道为神经存在与高池化密度，并非骨架或分叉标签。
 训练和冒烟验证均使用真实定义的结构目标；不以随机目标替代。
 """
 

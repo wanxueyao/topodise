@@ -1,10 +1,10 @@
-"""Main entry and fixed patient inference; no label-selected/oracle candidate pool."""
+"""Main entry and fixed patient-level entropy routing and majority voting."""
 from __future__ import annotations
 import math
 
 
 def fixed_patient_ensemble(indices, names, method):
-    """Exact retained entropy/vote rules, after full fold/label alignment checks."""
+    """Combine patient predictions by minimum-entropy routing or majority vote."""
     if method not in ('min_entropy_routing', 'majority_vote_tie_avg_prob'):
         raise ValueError(f'Unsupported fixed report method: {method}')
     if len(names) != len(set(names)) or len(indices) != len(names):
@@ -13,6 +13,7 @@ def fixed_patient_ensemble(indices, names, method):
     for fold, patient in sorted(indices[0]):
         values = sorted([(name, index[(fold, patient)]) for name, index in zip(names, indices)])
         if method == 'min_entropy_routing':
+            # Select the candidate with the smallest predictive entropy.
             entropy = lambda p: -sum(float(x)*math.log(max(float(x),1e-12)) for x in p)
             name, selected = min(values, key=lambda v: (entropy(v[1]['patient_probs']),v[0]))
             probs = selected['patient_probs']
@@ -26,6 +27,7 @@ def fixed_patient_ensemble(indices, names, method):
                     probs[c] += float(probability)
             probs = [p / float(len(values)) for p in probs]
             votes = {}
+            # Each candidate contributes one predicted class label.
             for _,v in values:
                 label = int(v['y_pred']); votes[label] = votes.get(label,0)+1
             best = max(votes.values()); tied = [label for label in votes if votes[label]==best]

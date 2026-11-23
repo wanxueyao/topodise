@@ -1,10 +1,15 @@
-"""Topology-preserving auxiliary head ψ."""
+"""Auxiliary head ψ for stage-dependent two-channel structural supervision."""
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class TopoHead(nn.Module):
-    """Decode z_sem -> skeleton & branch-point logits at 32x32."""
+    """Decode z_sem into two structural logit maps at the target resolution.
+
+    In the formal pipeline, Stage0 supervises GT nerve presence and high pooled
+    mask density; Stage1 uses low/high-threshold HGrad proxy targets with this
+    head's parameters frozen. The channels are not skeleton/branch-point labels.
+    """
 
     def __init__(self, z_dim: int = 512, base_ch: int = 128, target_size: int = 32):
         super().__init__()

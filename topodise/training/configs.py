@@ -312,9 +312,9 @@ class Stage2Config:
     min_delta: float = 1e-4
 
     # --- loss
-    lambda_ce: float = 1.0
+    lambda_ce: float = 1.0             # compatibility field; MIL classification has unit weight
     lambda_supcon: float = 1.0
-    lambda_recon: float = 0.05
+    lambda_recon: float = 0.05         # compatibility field; MIL diffusion uses lambda_fdiff
     tau_supcon: float = 0.1
     label_smooth_eps: float = 0.0       # label smoothing for CE; 0 = standard CE
     use_class_weights: bool = False     # inverse-frequency weighting for CE
@@ -363,19 +363,19 @@ class Stage2Config:
     fdiff_layers: int = 3
     fdiff_t_emb_dim: int = 128
     fdiff_T_aug: int = 100              # sample t in [1, T_aug]; T_aug << schedule.T
-    fdiff_k_aug: int = 1                # number of z_aug per sample per step
+    fdiff_k_aug: int = 1                # augmented bags per patient per step in MIL mode
     fdiff_start_epoch: int = 3          # warmup before enabling the augmentation
     fdiff_class_cond: bool = False      # condition the head on class label
-    fdiff_minority_only: bool = False   # only train aug-CE on minority-class samples
-    fdiff_min_cos: float = 0.85         # sanity gate: cos(z_aug, z) > this else fallback
+    fdiff_minority_only: bool = False   # apply augmented classification only to minority samples
+    fdiff_min_cos: float = 0.85         # fallback threshold if fdiff_gate_threshold is absent
     fdiff_gate_mode: Literal["hard_cos", "soft_cos", "none"] = "hard_cos"
-    fdiff_gate_threshold: float = 0.85
-    fdiff_gate_temperature: float = 0.10
+    fdiff_gate_threshold: float = 0.85  # cosine cutoff for hard_cos; sigmoid midpoint for soft_cos
+    fdiff_gate_temperature: float = 0.10  # sigmoid temperature for soft_cos blending
     # scale the gradient flowing back into the source feature anchor used by
     # feature diffusion. 0.0 = old full stop-grad; small >0 lets adapters move.
     fdiff_target_grad_scale: float = 0.0
-    lambda_fdiff: float = 0.5           # weight on L_fdiff (denoising MSE)
-    lambda_ce_aug: float = 0.3          # weight on L_ce computed on z_aug
+    lambda_fdiff: float = 0.5           # paper lambda_fdiff: feature-denoising MSE weight
+    lambda_ce_aug: float = 0.3          # paper lambda_aug: augmented-bag classification weight
     fdiff_lr_scale: float = 0.5         # lr for fdiff_head = lr * this
 
     # --- io
