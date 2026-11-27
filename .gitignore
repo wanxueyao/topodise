@@ -27,6 +27,7 @@ unet/logs/
 
 # Local datasets and patient-level derived tables
 datasets/
+/download.sh
 
 # External pretrained weights (documented download/place path)
 ablation_experiments/G01_G05_encoder_comparison/pretrained/
