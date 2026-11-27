@@ -64,3 +64,7 @@ Run the corresponding `experiments.<family>.batch_experiments` module. The image
 Nerve-LR uses 11 patient-averaged nerve measurements. Diagnosis includes 94 patients with eligible measurements and 110 paired-image patients for TopoDiSE. H&Y and subtype use the 63 PD patients. [Clinical baseline protocol](experiments/nerve_metrics_lr_experiments/README.md)
 
 Clinical images, patient manifests, patient predictions and trained weights are excluded from this repository.
+
+## License
+
+TopoDiSE source code and its documentation are released under the [MIT License](LICENSE). The paper, ACCV poster, datasets, and model weights are subject to their respective terms.

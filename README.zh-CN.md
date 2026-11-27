@@ -64,3 +64,7 @@ Stage1 还会检查 PD 和 DM 目录内的图像文件名，过滤区域池中�
 Nerve-LR 使用 11 项患者内平均的神经指标。诊断任务的指标队列有 94 人，TopoDiSE 配对图像队列有 110 人。H&Y 和亚型任务均为 63 名 PD 患者。[临床指标基线说明](experiments/nerve_metrics_lr_experiments/README.zh-CN.md)
 
 仓库不分发临床图像、患者清单、个体预测或训练权重。
+
+## 许可证
+
+TopoDiSE 源代码及其使用文档采用 [MIT 许可证](LICENSE)。论文、ACCV 海报、数据集和模型权重适用各自的条款。
